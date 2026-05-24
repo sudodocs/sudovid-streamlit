@@ -1,0 +1,20 @@
+# ── AI / LLM ──────────────────────────────────────────────────────────────────
+google-generativeai>=0.7.0
+edge-tts>=6.1.9
+
+# ── Streamlit ─────────────────────────────────────────────────────────────────
+streamlit>=1.35.0
+
+# ── Video assembly ────────────────────────────────────────────────────────────
+moviepy==1.0.3
+Pillow>=10.0.0
+numpy>=1.26.0
+
+# ── HTTP ──────────────────────────────────────────────────────────────────────
+requests>=2.31.0
+
+# ── moviepy system dependency note ───────────────────────────────────────────
+# moviepy requires ffmpeg to be installed on the system.
+# Streamlit Cloud installs it automatically via packages.txt.
+# Add a packages.txt file in your repo root containing:
+#   ffmpeg

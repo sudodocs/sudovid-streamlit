@@ -9,12 +9,11 @@ streamlit>=1.35.0
 moviepy==1.0.3
 Pillow>=10.0.0
 numpy>=1.26.0
+yt-dlp>=2025.1.1
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 requests>=2.31.0
 
-# ── moviepy system dependency note ───────────────────────────────────────────
-# moviepy requires ffmpeg to be installed on the system.
-# Streamlit Cloud installs it automatically via packages.txt.
-# Add a packages.txt file in your repo root containing:
+# ── System note ───────────────────────────────────────────────────────────────
+# moviepy + yt-dlp require ffmpeg. Add a packages.txt in repo root containing:
 #   ffmpeg

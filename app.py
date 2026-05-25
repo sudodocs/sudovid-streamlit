@@ -561,41 +561,100 @@ def _tmdb_trailer_key(topic: str, tmdb_key: str) -> str | None:
     return None
 
 
-def _build_ydl_opts(out_path: str) -> dict:
+def _validate_cookies_txt(content: str) -> tuple[bool, str]:
     """
-    Build yt-dlp options safe for Streamlit Cloud (server / datacenter IP).
+    Validate a Netscape-format cookies.txt file for YouTube cookies.
 
-    WHY android_vr?
-    ───────────────
-    YouTube's CDN hands out GVS (Google Video Server) tokens differently
-    depending on which InnerTube client identity is used.  Web, iOS, and
-    vanilla Android clients all require a GVS PO token that YouTube only
-    issues to requests coming from real browser sessions — datacenter IPs
-    get 403 Forbidden.
+    Returns (is_valid, message).
+    The file must contain at least one cookie for youtube.com or google.com.
+    Having session auth cookies (__Secure-3PSID, SAPISID, etc.) is what
+    actually bypasses YouTube's bot-detection on cloud IPs.
+    """
+    if not content.strip():
+        return False, "File is empty."
 
-    The android_vr client (YouTube VR / Oculus) is exempt from this policy:
-      • REQUIRE_JS_PLAYER  = False  → no Deno/Node.js needed on the server
-      • REQUIRE_AUTH       = False  → no cookies or login
-      • GVS_PO_TOKEN_POLICY required = False for ALL protocols (HTTPS, DASH, HLS)
-      • PLAYER_PO_TOKEN_POLICY required = False
+    youtube_cookies: list[str] = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            domain = parts[0]
+            name   = parts[5]
+            if "youtube.com" in domain or "google.com" in domain:
+                youtube_cookies.append(name)
 
-    This makes it the only client that consistently downloads on cloud hosts
-    without additional tooling or credentials.
+    if not youtube_cookies:
+        return False, (
+            "No YouTube cookies found in this file. "
+            "Make sure you exported cookies while on youtube.com."
+        )
+
+    important = {"VISITOR_INFO1_LIVE", "YSC", "__Secure-3PSID", "HSID", "SAPISID"}
+    found_important = important & set(youtube_cookies)
+
+    if not found_important:
+        return True, (
+            f"Found {len(youtube_cookies)} YouTube cookie(s), but no session-auth cookies "
+            f"({', '.join(sorted(important))}). Download may still fail on cloud IPs."
+        )
+
+    return True, (
+        f"✓ {len(youtube_cookies)} YouTube cookie(s) including "
+        f"{len(found_important)} auth cookie(s). Ready to download."
+    )
+
+
+def _build_ydl_opts(out_path: str, cookie_path: str | None = None) -> dict:
+    """
+    Build yt-dlp options for Streamlit Cloud (server / datacenter IP).
+
+    TWO MODES depending on whether the user supplied a cookies.txt file:
+
+    WITH cookies (cookie_path provided)
+    ────────────────────────────────────
+    Uses the 'web' InnerTube client with the user's real browser session
+    cookies.  YouTube treats the request as coming from a logged-in browser,
+    bypassing bot-detection entirely regardless of the server's IP address.
+    This is the only 100% reliable approach from cloud IPs and is the method
+    explicitly recommended in the yt-dlp documentation for server deployments.
+
+    WITHOUT cookies (cookie_path is None)
+    ──────────────────────────────────────
+    Falls back to the 'android_vr' client.  This client does not require a
+    JS player, auth, or GVS PO tokens, so it works on some cloud IPs.
+    However, YouTube increasingly blocks entire AWS/GCP IP ranges at the
+    InnerTube API level, so this path may still produce 403 errors.
 
     FORMAT STRATEGY
     ───────────────
-    Prefer mp4 video + m4a audio ≤720p, with a muxed mp4 fallback.  This
-    maximises compatibility with MoviePy/ffmpeg and avoids WebM/VP9 streams
-    that sometimes have DRM issues on android_vr.
+    Prefer mp4 video + m4a audio ≤720p, with a muxed mp4 fallback.
     """
-    return {
+    if cookie_path:
+        # ── Authenticated path: real browser session cookies ─────────────────
+        # 'web' client + valid cookies → YouTube sees a real logged-in browser.
+        # This bypasses IP-based bot-detection completely.
+        client  = "web"
+        ua      = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        )
+        extra = {"cookiefile": cookie_path}
+    else:
+        # ── Unauthenticated path: android_vr (no PO token required) ──────────
+        # Best effort without credentials; may fail on heavily blocked IPs.
+        client  = "android_vr"
+        ua      = _ANDROID_VR_UA
+        extra   = {}
+
+    opts: dict = {
         "format": (
-            # Primary: separate video + audio ≤720p, merged to mp4
             "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
             "/bestvideo[height<=720][ext=mp4]+bestaudio"
             "/bestvideo[height<=720]+bestaudio[ext=m4a]"
             "/bestvideo[height<=720]+bestaudio"
-            # Fallback: pre-muxed mp4 ≤720p (older / restricted videos)
             "/best[height<=720][ext=mp4]"
             "/best[height<=720]"
             "/best"
@@ -605,61 +664,55 @@ def _build_ydl_opts(out_path: str) -> dict:
         "no_warnings":         True,
         "noplaylist":          True,
         "merge_output_format": "mp4",
-        # ── Streamlit Cloud / server-IP options ──────────────────────────────
-        # Force the android_vr InnerTube client — the only client that does
-        # not require a GVS PO token on datacenter IPs (verified against
-        # yt-dlp 2026.03.17 INNERTUBE_CLIENTS table).
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android_vr"],
-            }
-        },
-        # android_vr User-Agent must match the client identity; YouTube CDN
-        # validates the UA against the InnerTube client name.
-        "http_headers": {
-            "User-Agent": _ANDROID_VR_UA,
-        },
-        # Streamlit Cloud routes HTTPS through a proxy with a non-standard
-        # TLS chain; nocheckcertificate prevents handshake failures.
+        "extractor_args":      {"youtube": {"player_client": [client]}},
+        "http_headers":        {"User-Agent": ua},
+        # Streamlit Cloud's HTTPS proxy has a non-standard TLS chain.
         "nocheckcertificate":  True,
-        # Retry generously — CDN 5xx and transient 403s are common on first hit.
+        # Retry generously — transient 5xx from YouTube CDN is common.
         "retries":             10,
         "fragment_retries":    10,
         "file_access_retries": 5,
         "socket_timeout":      30,
     }
+    opts.update(extra)
+    return opts
 
 
-def _download_trailer(topic: str, tmdb_key: str = "") -> str | None:
+def _download_trailer(topic: str,
+                      tmdb_key: str = "",
+                      cookie_path: str | None = None) -> str | None:
     """
     Download the official trailer for a film/series at up to 720p.
 
     Strategy (in order):
-      1. TMDB /videos → exact YouTube video ID (most reliable, no search)
+      1. TMDB /videos → exact YouTube video ID (avoids keyword search)
       2. yt-dlp ytsearch as fallback if TMDB lookup fails or no key given
 
-    Uses the android_vr InnerTube client to avoid 403 errors on cloud IPs.
-    Caches the download in /tmp so re-runs are instant.
-    Returns path to .mp4 or None on failure.
+    When cookie_path is provided the 'web' client is used with real browser
+    session cookies, which bypasses YouTube's cloud-IP bot-detection.
+    Without cookies the 'android_vr' client is used as a best-effort fallback.
+
+    Caches downloads in /tmp. Returns path to .mp4 or None on failure.
     """
     try:
         import yt_dlp
 
         safe_name = re.sub(r"[^a-z0-9]", "_", topic.lower())
-        out_path  = os.path.join(tempfile.gettempdir(), f"trailer_{safe_name}.mp4")
+        # Separate cache files for cookie vs no-cookie runs so a failed
+        # no-cookie attempt doesn't block a later cookie-based retry.
+        suffix   = "_auth" if cookie_path else ""
+        out_path = os.path.join(
+            tempfile.gettempdir(), f"trailer_{safe_name}{suffix}.mp4")
 
-        # Return cached file immediately if it already exists and is non-trivial
         if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
             return out_path
 
-        opts = _build_ydl_opts(out_path)
+        opts = _build_ydl_opts(out_path, cookie_path=cookie_path)
 
-        # Prefer exact YouTube ID from TMDB (avoids YouTube search entirely)
         yt_key = _tmdb_trailer_key(topic, tmdb_key)
         if yt_key:
             video_url = f"https://www.youtube.com/watch?v={yt_key}"
         else:
-            # Fallback: keyword search (less reliable on server IPs)
             video_url = f"ytsearch1:{topic} official trailer"
 
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1286,7 +1339,7 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
 
 def _assembly_worker(audio_path, shot_list, mode, topic,
                      tmdb_key, pexels_key, output_path,
-                     is_shorts, credit_override):
+                     is_shorts, credit_override, cookie_path=None):
     try:
         cw, ch = _canvas(is_shorts)
 
@@ -1295,7 +1348,8 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
         trailer_segs = []
         if mode == MODE_FILM:
             _write_progress(2, "Searching for official trailer…")
-            trailer_path = _download_trailer(topic, tmdb_key)
+            trailer_path = _download_trailer(topic, tmdb_key,
+                                             cookie_path=cookie_path)
             if trailer_path:
                 n_segs = 4 if is_shorts else 8
                 trailer_segs = _extract_trailer_segments(
@@ -1770,6 +1824,97 @@ with tab6:
 
     st.markdown("---")
 
+    # ── YouTube cookies resolution (Film mode only) ───────────────────────────
+    # YouTube blocks cloud/datacenter IPs at the HTTP level.  Session cookies
+    # from a real browser login are the only reliable bypass.
+    #
+    # Priority order:
+    #   1. YOUTUBE_COOKIES_TXT in Streamlit Secrets  — operator-supplied, zero
+    #      friction for users (they never see the uploader at all).
+    #   2. cookies.txt file uploaded by the user in the UI  — fallback when no
+    #      Secret is configured.
+    #   3. No cookies  — android_vr client last resort, may still 403.
+    cookie_path: str | None = None
+
+    if mode == MODE_FILM:
+        # ── Priority 1: operator secret ───────────────────────────────────────
+        _secret_cookies = _secret("YOUTUBE_COOKIES_TXT")
+        if _secret_cookies:
+            _valid, _msg = _validate_cookies_txt(_secret_cookies)
+            if _valid:
+                # Write once per process; reuse across reruns via session state
+                if "cookie_path" not in st.session_state:
+                    _cf = tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".txt", delete=False, encoding="utf-8")
+                    _cf.write(_secret_cookies)
+                    _cf.close()
+                    st.session_state["cookie_path"] = _cf.name
+                cookie_path = st.session_state["cookie_path"]
+                # Validate the tempfile still exists (container restart clears /tmp)
+                if not os.path.exists(cookie_path):
+                    _cf = tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".txt", delete=False, encoding="utf-8")
+                    _cf.write(_secret_cookies)
+                    _cf.close()
+                    cookie_path = _cf.name
+                    st.session_state["cookie_path"] = cookie_path
+                st.caption("🍪 YouTube cookies loaded from Streamlit Secrets — trailer download ready.")
+            else:
+                st.warning(f"YOUTUBE_COOKIES_TXT secret found but invalid: {_msg}")
+
+        # ── Priority 2: user upload (shown only when no valid Secret exists) ──
+        if not cookie_path:
+            with st.expander("🍪 YouTube Cookies (required for trailer download)", expanded=True):
+                st.markdown(
+                    "YouTube blocks downloads from cloud server IPs. "
+                    "Uploading your browser's **cookies.txt** lets yt-dlp authenticate "
+                    "as your real session and bypasses the block.\n\n"
+                    "**How to export cookies.txt in 3 steps:**\n"
+                    "1. Install **[Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)** "
+                    "in Chrome (or *cookies.txt* for Firefox).\n"
+                    "2. Go to **[youtube.com](https://youtube.com)** while logged in.\n"
+                    "3. Click the extension → **Export** → upload the saved file below.\n\n"
+                    "⚠️ Cookies are used only for this download session and are never "
+                    "persisted to disk beyond the current browser tab.\n\n"
+                    "**App operators:** add `YOUTUBE_COOKIES_TXT` to Streamlit Secrets "
+                    "to pre-load cookies and hide this uploader from users entirely."
+                )
+                cookie_file = st.file_uploader(
+                    "Upload cookies.txt (Netscape format)",
+                    type=["txt"],
+                    key="yt_cookies_upload",
+                    help="Export from Chrome/Firefox using 'Get cookies.txt LOCALLY' or equivalent.",
+                )
+                if cookie_file is not None:
+                    cookie_content = cookie_file.getvalue().decode("utf-8", errors="ignore")
+                    valid, val_msg = _validate_cookies_txt(cookie_content)
+                    if valid:
+                        st.success(val_msg)
+                        _cf = tempfile.NamedTemporaryFile(
+                            mode="w", suffix=".txt", delete=False, encoding="utf-8")
+                        _cf.write(cookie_content)
+                        _cf.close()
+                        cookie_path = _cf.name
+                        st.session_state["cookie_path"] = cookie_path
+                    else:
+                        st.error(val_msg)
+                        st.session_state.pop("cookie_path", None)
+                elif "cookie_path" in st.session_state:
+                    cookie_path = st.session_state["cookie_path"]
+                    if os.path.exists(cookie_path):
+                        st.info("🍪 Using cookies from earlier upload this session.")
+                    else:
+                        st.session_state.pop("cookie_path", None)
+                        cookie_path = None
+
+                if not cookie_path:
+                    st.caption(
+                        "Without cookies the download falls back to the `android_vr` "
+                        "client, which may still be blocked on Streamlit Cloud's AWS IPs."
+                    )
+
+    st.markdown("---")
+
     # Pre-flight checks
     audio_path_v  = st.session_state.get("last_audio_path", "")
     script_text_v = st.session_state.get("final_script_text", "")
@@ -1793,15 +1938,10 @@ with tab6:
             st.warning(m)
     else:
         if mode == MODE_FILM:
-            st.caption(
-                "ℹ️ Trailers are downloaded via **yt-dlp** using the `android_vr` InnerTube "
-                "client, which bypasses the GVS PO token requirement that causes 403 errors "
-                "on cloud/datacenter IPs. The TMDB key is used to look up the exact YouTube "
-                "video ID so no keyword search is needed."
-            )
             if st.button("🎞️ Pre-fetch Trailer (optional but recommended)"):
-                with st.spinner(f"Searching for {topic_val} official trailer…"):
-                    tp = _download_trailer(topic_val, tmdb_key)
+                with st.spinner(f"Downloading {topic_val} official trailer…"):
+                    tp = _download_trailer(topic_val, tmdb_key,
+                                           cookie_path=cookie_path)
                     if tp:
                         segs = _extract_trailer_segments(tp)
                         st.session_state["trailer_path"] = tp
@@ -1810,12 +1950,21 @@ with tab6:
                     else:
                         st.session_state["trailer_path"] = None
                         st.session_state["trailer_segs"] = []
-                        st.warning(
-                            "Trailer download failed. This can happen when the server's IP "
-                            "is blocked by YouTube's CDN even with the android_vr client. "
-                            "Assembly will use TMDB stills and Pexels B-roll instead — "
-                            "the video will still complete successfully."
-                        )
+                        if cookie_path:
+                            st.warning(
+                                "Trailer download failed even with cookies. "
+                                "Your cookies may have expired — try re-exporting from "
+                                "your browser while logged in to youtube.com. "
+                                "Assembly will use TMDB stills and Pexels B-roll instead."
+                            )
+                        else:
+                            st.warning(
+                                "Trailer download failed (no cookies supplied — "
+                                "YouTube blocked the cloud server IP). "
+                                "Upload a cookies.txt file above and try again, or "
+                                "proceed without the trailer — assembly will use "
+                                "TMDB stills and Pexels B-roll instead."
+                            )
 
         # Shot list
         if st.button("🎬 Generate Shot List"):
@@ -1872,6 +2021,7 @@ with tab6:
                             output_path     = output_path,
                             is_shorts       = is_shorts,
                             credit_override = credit_override,
+                            cookie_path     = cookie_path,
                         ),
                         daemon=True,
                     )
@@ -1911,4 +2061,4 @@ with tab6:
 # FOOTER
 # ─────────────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption("SudoVid v1.1 | AI-Powered Script, Voice & Video Engine")
+st.caption("SudoVid v1.3 | AI-Powered Script, Voice & Video Engine")

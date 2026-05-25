@@ -13,16 +13,16 @@ import re
 import numpy as np
 import edge_tts
 from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
-from moviepy.editor import AudioFileClip, concatenate_videoclips
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from moviepy.editor import AudioFileClip, concatenate_videoclips, VideoFileClip
 from moviepy.video.VideoClip import VideoClip
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="ArchiText",
-    page_icon="✍️",
+    page_title="SudoVid",
+    page_icon="🎬",
     layout="centered",
 )
 
@@ -81,11 +81,33 @@ st.markdown("""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONSTANTS — MODES
+# CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
 MODE_FILM = "Film & Series Analysis"
 MODE_TECH = "Tech News & Investigative"
 MODE_EDU  = "Educational Technology"
+
+# Canvas sizes
+CANVAS_LANDSCAPE = (1280, 720)   # 16:9  long-form
+CANVAS_SHORTS    = (1080, 1920)  # 9:16  Shorts
+
+FPS            = 24
+TMDB_BASE      = "https://api.themoviedb.org/3"
+TMDB_IMG       = "https://image.tmdb.org/t/p/w1280"
+PEXELS_BASE    = "https://api.pexels.com/v1/search"
+WIKI_THUMB     = "https://en.wikipedia.org/api/rest_v1/page/summary/{}"
+PROGRESS_FILE  = os.path.join(tempfile.gettempdir(), "sa_video_progress.json")
+
+_DARK_BG  = (10, 12, 20)
+_ACCENT   = (37,  99, 235)
+_TECH_ACC = (234, 88,  12)
+_EDU_ACC  = (22, 163,  74)
+_TEXT_HI  = (240, 245, 255)
+_TEXT_LO  = (148, 163, 184)
+
+
+def _canvas(is_shorts: bool) -> tuple:
+    return CANVAS_SHORTS if is_shorts else CANVAS_LANDSCAPE
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,7 +182,7 @@ def call_gemini(api_key, prompt, system_instruction="", use_search=False, is_jso
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SCRIPT FUNCTIONS
+# SCRIPT GENERATION
 # ─────────────────────────────────────────────────────────────────────────────
 
 def perform_grounded_research(topic, mode, source_type, angle, length, api_key):
@@ -277,23 +299,8 @@ def generate_youtube_bundle(api_key, script_text):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VIDEO ASSEMBLY — CONSTANTS & HELPERS
+# PROGRESS HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
-VIDEO_W, VIDEO_H  = 1280, 720
-FPS               = 24
-TMDB_BASE         = "https://api.themoviedb.org/3"
-TMDB_IMG          = "https://image.tmdb.org/t/p/w1280"
-PEXELS_BASE       = "https://api.pexels.com/v1/search"
-WIKI_THUMB        = "https://en.wikipedia.org/api/rest_v1/page/summary/{}"
-PROGRESS_FILE     = os.path.join(tempfile.gettempdir(), "sa_video_progress.json")
-
-_DARK_BG  = (10, 12, 20)
-_ACCENT   = (37,  99, 235)   # blue  — film
-_TECH_ACC = (234, 88,  12)   # orange — tech
-_EDU_ACC  = (22, 163,  74)   # green  — edu
-_TEXT_HI  = (240, 245, 255)
-_TEXT_LO  = (148, 163, 184)
-
 
 def _write_progress(pct, msg, done=False, error=""):
     try:
@@ -311,6 +318,10 @@ def _read_progress():
     except Exception:
         return {"pct": 0, "msg": "Starting…", "done": False, "error": ""}
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FONT HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _font(size, bold=False):
     paths = (
@@ -339,23 +350,66 @@ def _mono_font(size):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IMAGE FETCH
+# IMAGE FIT  — handles all aspect ratio combinations without distortion
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _fetch_array(url):
+def _fit_to_canvas(img_pil: Image.Image, cw: int, ch: int) -> np.ndarray:
+    """
+    Fit any image into cw×ch without distortion or cropping faces.
+
+    Same-family ratios (L→L or P→P): scale-to-fill + centre crop.
+    Cross-family  (L→P or P→L):      scale-to-fit  + blurred darkened
+                                       background filling the bars.
+    """
+    sw, sh = img_pil.size
+    target_ratio = cw / ch
+    src_ratio    = sw / sh
+
+    both_landscape = src_ratio >= 1.0 and target_ratio >= 1.0
+    both_portrait  = src_ratio <  1.0 and target_ratio <  1.0
+
+    if both_landscape or both_portrait:
+        scale = max(cw / sw, ch / sh)
+        nw, nh = int(sw * scale), int(sh * scale)
+        resized = img_pil.resize((nw, nh), Image.LANCZOS)
+        x0 = (nw - cw) // 2
+        y0 = (nh - ch) // 2
+        return np.array(resized.crop((x0, y0, x0 + cw, y0 + ch)))
+    else:
+        # Scale to fit inside canvas
+        scale = min(cw / sw, ch / sh)
+        nw, nh = int(sw * scale), int(sh * scale)
+        resized = img_pil.resize((nw, nh), Image.LANCZOS)
+
+        # Build blurred darkened background
+        bg_scale = max(cw / sw, ch / sh)
+        bg_w = max(int(sw * bg_scale), cw)
+        bg_h = max(int(sh * bg_scale), ch)
+        bg = img_pil.resize((bg_w, bg_h), Image.LANCZOS)
+        bx = (bg_w - cw) // 2
+        by = (bg_h - ch) // 2
+        bg = bg.crop((bx, by, bx + cw, by + ch))
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=22))
+        bg_arr = (np.array(bg) * 0.30).astype(np.uint8)
+        canvas = Image.fromarray(bg_arr)
+
+        # Paste sharp image centred
+        px = (cw - nw) // 2
+        py = (ch - nh) // 2
+        canvas.paste(resized, (px, py))
+        return np.array(canvas)
+
+
+def _fetch_array(url: str, cw: int, ch: int) -> np.ndarray | None:
+    """Download an image and fit it to canvas dimensions."""
     try:
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         img = Image.open(BytesIO(resp.content)).convert("RGB")
-        w, h = img.size
-        target = VIDEO_W / VIDEO_H
-        if (w / h) > target:
-            nw = int(h * target)
-            img = img.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
-        else:
-            nh = int(w / target)
-            img = img.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
-        return np.array(img.resize((VIDEO_W, VIDEO_H), Image.LANCZOS))
+        # Validate minimum size
+        if img.width < 100 or img.height < 100:
+            return None
+        return _fit_to_canvas(img, cw, ch)
     except Exception:
         return None
 
@@ -378,13 +432,21 @@ def _tmdb_lookup(topic, key):
 
 
 def _tmdb_images(media_id, media_type, key):
+    """
+    Fetch TMDB backdrops (landscape-first) and posters.
+    Backdrops are sorted by aspect ratio so landscape images
+    come first — portrait backdrops are pushed to the end.
+    """
     try:
         r = requests.get(f"{TMDB_BASE}/{media_type}/{media_id}/images",
                          params={"api_key": key}, timeout=10).json()
-        return {
-            "backdrops": [TMDB_IMG + x["file_path"] for x in r.get("backdrops", [])[:15]],
-            "posters":   [TMDB_IMG + x["file_path"] for x in r.get("posters",   [])[:3]],
-        }
+        # Sort backdrops: prefer ones with landscape aspect ratio
+        raw_backdrops = r.get("backdrops", [])
+        raw_backdrops.sort(
+            key=lambda x: -(x.get("width", 1) / max(x.get("height", 1), 1)))
+        backdrops = [TMDB_IMG + x["file_path"] for x in raw_backdrops[:15]]
+        posters   = [TMDB_IMG + x["file_path"] for x in r.get("posters", [])[:3]]
+        return {"backdrops": backdrops, "posters": posters}
     except Exception:
         return {"backdrops": [], "posters": []}
 
@@ -402,13 +464,14 @@ def _tmdb_cast_photo(name, key):
     return None
 
 
-def _pexels_image(query, key, page=1):
+def _pexels_image(query, key, page=1, orientation="landscape"):
+    """Fetch a Pexels image. orientation: 'landscape' for long-form, 'portrait' for Shorts."""
     try:
         r = requests.get(
             PEXELS_BASE,
             headers={"Authorization": key},
             params={"query": query, "per_page": 5,
-                    "page": page, "orientation": "landscape"},
+                    "page": page, "orientation": orientation},
             timeout=10,
         ).json()
         photos = r.get("photos", [])
@@ -420,100 +483,228 @@ def _pexels_image(query, key, page=1):
 
 
 def _wiki_image(query):
+    """
+    Fetch Wikipedia thumbnail with validation:
+    - Must resolve to a real image URL
+    - Must be at least 200×200 (filters out tiny icons)
+    """
     try:
         slug = query.strip().replace(" ", "_")
         r = requests.get(WIKI_THUMB.format(slug), timeout=10).json()
-        return r.get("thumbnail", {}).get("source")
+        thumb = r.get("thumbnail", {})
+        url = thumb.get("source")
+        w   = thumb.get("width", 0)
+        h   = thumb.get("height", 0)
+        if url and w >= 200 and h >= 200:
+            return url
     except Exception:
         pass
     return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CARD GENERATORS
+# TRAILER DOWNLOAD & SEGMENTATION  (Film mode, yt-dlp)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _base_card(accent):
-    img  = Image.new("RGB", (VIDEO_W, VIDEO_H), _DARK_BG)
-    draw = ImageDraw.Draw(img)
-    for y in range(VIDEO_H):
-        t = y / VIDEO_H
-        s = int(10 + 18 * math.sin(math.pi * t))
-        draw.line([(0, y), (VIDEO_W, y)], fill=(s, s + 2, s + 10))
-    draw.rectangle([(0, 0), (6, VIDEO_H)], fill=accent)
-    return img, draw
+def _download_trailer(topic: str) -> str | None:
+    """
+    Search YouTube for '{topic} official trailer', download the best match
+    at 720p into a temp file. Returns path to .mp4 or None on failure.
+    Strips the last studio-logo slate (final 5s) automatically.
+    """
+    try:
+        import yt_dlp
+        out_path = os.path.join(tempfile.gettempdir(),
+                                f"trailer_{re.sub(r'[^a-z0-9]', '_', topic.lower())}.mp4")
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
+            return out_path   # reuse cached download
 
+        ydl_opts = {
+            "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]",
+            "outtmpl": out_path,
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "default_search": "ytsearch1",
+            "merge_output_format": "mp4",
+        }
+        query = f"{topic} official trailer"
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f"ytsearch1:{query}"])
+
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
+            return out_path
+    except Exception:
+        pass
+    return None
+
+
+def _extract_trailer_segments(video_path: str,
+                               num_segments: int = 6,
+                               seg_duration: float = 8.0) -> list:
+    """
+    Return list of (start_sec, end_sec) evenly spread across the trailer,
+    skipping the first 2s (logo) and last 5s (release date slate).
+    """
+    try:
+        vc = VideoFileClip(video_path)
+        total = vc.duration
+        vc.close()
+        usable_start = 2.0
+        usable_end   = max(usable_start + seg_duration, total - 5.0)
+        usable_range = usable_end - usable_start - seg_duration
+        if usable_range <= 0:
+            return []
+        step = usable_range / max(num_segments - 1, 1)
+        segs = []
+        for i in range(num_segments):
+            start = usable_start + i * step
+            end   = min(start + seg_duration, usable_end)
+            if end - start >= 3.0:
+                segs.append((round(start, 1), round(end, 1)))
+        return segs
+    except Exception:
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CREDIT OVERLAY
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _add_credit_overlay(frame_arr: np.ndarray,
+                         credit_text: str,
+                         is_shorts: bool,
+                         cw: int, ch: int) -> np.ndarray:
+    """
+    Composite credit text onto a video frame.
+    Shorts  → top centre, white text on semi-transparent pill
+    Long    → bottom left, small white text, no background
+    """
+    if not credit_text:
+        return frame_arr
+    img  = Image.fromarray(frame_arr.astype(np.uint8)).convert("RGBA")
+    overlay = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    font_size = max(18, ch // 58)
+    font = _font(font_size)
+
+    bbox  = draw.textbbox((0, 0), credit_text, font=font)
+    tw    = bbox[2] - bbox[0]
+    th    = bbox[3] - bbox[1]
+    pad_x, pad_y = 14, 7
+
+    if is_shorts:
+        tx = (cw - tw) // 2
+        ty = int(ch * 0.028)
+        draw.rounded_rectangle(
+            [tx - pad_x, ty - pad_y, tx + tw + pad_x, ty + th + pad_y],
+            radius=10, fill=(0, 0, 0, 145))
+        draw.text((tx, ty), credit_text, font=font, fill=(255, 255, 255, 230))
+    else:
+        tx = int(cw * 0.015)
+        ty = int(ch * 0.938)
+        draw.text((tx, ty), credit_text, font=font, fill=(255, 255, 255, 175))
+
+    composited = Image.alpha_composite(img, overlay).convert("RGB")
+    return np.array(composited)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CARD GENERATORS  — all accept cw, ch for canvas-aware sizing
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _accent_for_mode(mode):
     return _ACCENT if mode == MODE_FILM else (_TECH_ACC if mode == MODE_TECH else _EDU_ACC)
 
 
-def make_text_card(line1, line2="", label="", mode=MODE_FILM):
-    img, draw = _base_card(_accent_for_mode(mode))
-    cy = VIDEO_H // 2
-    if label:
-        draw.text((VIDEO_W // 2, cy - 100), label.upper(),
-                  font=_font(22), fill=_accent_for_mode(mode), anchor="mm")
-    wrapped = "\n".join(textwrap.wrap(line1, width=34))
-    draw.text((VIDEO_W // 2, cy - (30 if line2 else 0)), wrapped,
-              font=_font(58, bold=True), fill=_TEXT_HI, anchor="mm", align="center")
-    if line2:
-        draw.text((VIDEO_W // 2, cy + 70), line2,
-                  font=_font(34), fill=_TEXT_LO, anchor="mm")
-    return np.array(img)
-
-
-def make_chapter_card(chapter_num, title, mode=MODE_FILM):
-    accent = _accent_for_mode(mode)
-    img, draw = _base_card(accent)
-    draw.text((VIDEO_W - 60, VIDEO_H - 40), f"#{chapter_num}",
-              font=_font(96, bold=True), fill=(*accent, 30), anchor="rb")
-    draw.text((VIDEO_W // 2, VIDEO_H // 2 - 40), f"PART {chapter_num}",
-              font=_font(24), fill=accent, anchor="mm")
-    wrapped = "\n".join(textwrap.wrap(title, width=36))
-    draw.text((VIDEO_W // 2, VIDEO_H // 2 + 30), wrapped,
-              font=_font(52, bold=True), fill=_TEXT_HI, anchor="mm", align="center")
-    return np.array(img)
-
-
-def make_stat_card(stat, description, mode=MODE_TECH):
-    accent = _accent_for_mode(mode)
-    img, draw = _base_card(accent)
-    draw.text((VIDEO_W // 2, VIDEO_H // 2 - 60), stat,
-              font=_font(110, bold=True), fill=_TEXT_HI, anchor="mm")
-    draw.text((VIDEO_W // 2, VIDEO_H // 2 + 70), description,
-              font=_font(36), fill=_TEXT_LO, anchor="mm")
-    return np.array(img)
-
-
-def make_code_card(snippet, language=""):
-    img  = Image.new("RGB", (VIDEO_W, VIDEO_H), (18, 20, 30))
+def _base_card(accent, cw, ch):
+    img  = Image.new("RGB", (cw, ch), _DARK_BG)
     draw = ImageDraw.Draw(img)
-    draw.rectangle([(0, 0), (VIDEO_W, 44)], fill=(30, 32, 44))
+    for y in range(ch):
+        t = y / ch
+        s = int(10 + 18 * math.sin(math.pi * t))
+        draw.line([(0, y), (cw, y)], fill=(s, s + 2, s + 10))
+    draw.rectangle([(0, 0), (6, ch)], fill=accent)
+    return img, draw
+
+
+def make_text_card(line1, line2="", label="", mode=MODE_FILM, cw=1280, ch=720):
+    accent = _accent_for_mode(mode)
+    img, draw = _base_card(accent, cw, ch)
+    cy = ch // 2
+    scale = ch / 720
+    if label:
+        draw.text((cw // 2, cy - int(100 * scale)), label.upper(),
+                  font=_font(max(16, int(22 * scale))), fill=accent, anchor="mm")
+    wrapped = "\n".join(textwrap.wrap(line1, width=max(20, int(34 * (cw / 1280)))))
+    draw.text((cw // 2, cy - (int(30 * scale) if line2 else 0)), wrapped,
+              font=_font(max(28, int(58 * scale)), bold=True),
+              fill=_TEXT_HI, anchor="mm", align="center")
+    if line2:
+        draw.text((cw // 2, cy + int(70 * scale)), line2,
+                  font=_font(max(18, int(34 * scale))), fill=_TEXT_LO, anchor="mm")
+    return np.array(img)
+
+
+def make_chapter_card(chapter_num, title, mode=MODE_FILM, cw=1280, ch=720):
+    accent = _accent_for_mode(mode)
+    img, draw = _base_card(accent, cw, ch)
+    scale = ch / 720
+    draw.text((cw - int(60 * scale), ch - int(40 * scale)), f"#{chapter_num}",
+              font=_font(max(48, int(96 * scale)), bold=True),
+              fill=(*accent, 30), anchor="rb")
+    draw.text((cw // 2, ch // 2 - int(40 * scale)), f"PART {chapter_num}",
+              font=_font(max(14, int(24 * scale))), fill=accent, anchor="mm")
+    wrapped = "\n".join(textwrap.wrap(title, width=max(20, int(36 * (cw / 1280)))))
+    draw.text((cw // 2, ch // 2 + int(30 * scale)), wrapped,
+              font=_font(max(26, int(52 * scale)), bold=True),
+              fill=_TEXT_HI, anchor="mm", align="center")
+    return np.array(img)
+
+
+def make_stat_card(stat, description, mode=MODE_TECH, cw=1280, ch=720):
+    accent = _accent_for_mode(mode)
+    img, draw = _base_card(accent, cw, ch)
+    scale = ch / 720
+    draw.text((cw // 2, ch // 2 - int(60 * scale)), stat,
+              font=_font(max(48, int(110 * scale)), bold=True),
+              fill=_TEXT_HI, anchor="mm")
+    draw.text((cw // 2, ch // 2 + int(70 * scale)), description,
+              font=_font(max(18, int(36 * scale))), fill=_TEXT_LO, anchor="mm")
+    return np.array(img)
+
+
+def make_code_card(snippet, language="", cw=1280, ch=720):
+    img  = Image.new("RGB", (cw, ch), (18, 20, 30))
+    draw = ImageDraw.Draw(img)
+    scale = ch / 720
+    header_h = int(44 * scale)
+    draw.rectangle([(0, 0), (cw, header_h)], fill=(30, 32, 44))
+    dot_r = int(7 * scale)
     for i, col in enumerate([(255, 95, 87), (255, 189, 46), (39, 201, 63)]):
-        draw.ellipse([(18 + i * 22, 14), (32 + i * 22, 28)], fill=col)
+        cx_ = int((18 + i * 22) * scale)
+        cy_ = int(22 * scale)
+        draw.ellipse([cx_ - dot_r, cy_ - dot_r, cx_ + dot_r, cy_ + dot_r], fill=col)
     if language:
-        draw.text((VIDEO_W - 20, 22), language.upper(),
-                  font=_font(16), fill=(100, 116, 139), anchor="rm")
-    mf    = _mono_font(26)
-    lines = snippet.strip().split("\n")[:18]
-    y     = 64
+        draw.text((cw - int(20 * scale), int(22 * scale)), language.upper(),
+                  font=_font(max(12, int(16 * scale))), fill=(100, 116, 139), anchor="rm")
+    line_h = int(34 * scale)
+    mf     = _mono_font(max(14, int(26 * scale)))
+    lines  = snippet.strip().split("\n")[:18]
+    y      = header_h + int(10 * scale)
     for i, line in enumerate(lines):
-        draw.text((50, y), str(i + 1), font=mf, fill=(64, 74, 94), anchor="rm")
+        draw.text((int(50 * scale), y), str(i + 1), font=mf,
+                  fill=(64, 74, 94), anchor="rm")
         stripped = line.lstrip()
-        if stripped.startswith(("#", "//")):
-            col = (106, 153, 85)
+        if stripped.startswith(("#", "//")):               col = (106, 153, 85)
         elif any(stripped.startswith(k) for k in (
             "def ", "class ", "import ", "from ", "return ",
-            "const ", "let ", "var ", "function ", "async "
-        )):
-            col = (197, 134, 192)
-        elif stripped.startswith(("'", '"', "`", "f'")):
-            col = (206, 145, 120)
-        else:
-            col = _TEXT_HI
-        draw.text((64, y), line, font=mf, fill=col)
-        y += 34
+            "const ", "let ", "var ", "function ", "async ")): col = (197, 134, 192)
+        elif stripped.startswith(("'", '"', "`", "f'")):   col = (206, 145, 120)
+        else:                                               col = _TEXT_HI
+        draw.text((int(64 * scale), y), line, font=mf, fill=col)
+        y += line_h
     return np.array(img)
 
 
@@ -521,7 +712,7 @@ def make_code_card(snippet, language=""):
 # KEN BURNS ZOOM
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _zoom_clip(arr, duration, zoom_in=True):
+def _zoom_clip(arr: np.ndarray, duration: float, zoom_in: bool = True):
     pil = Image.fromarray(arr)
     h0, w0 = arr.shape[:2]
 
@@ -530,26 +721,76 @@ def _zoom_clip(arr, duration, zoom_in=True):
         scale = 1.0 + 0.04 * (p if zoom_in else (1 - p))
         nw, nh = int(w0 * scale), int(h0 * scale)
         res   = np.array(pil.resize((nw, nh), Image.BILINEAR))
-        x0 = (nw - w0) // 2
-        y0 = (nh - h0) // 2
-        return res[y0:y0 + h0, x0:x0 + w0]
+        x0_ = (nw - w0) // 2
+        y0_ = (nh - h0) // 2
+        return res[y0_:y0_ + h0, x0_:x0_ + w0]
 
     return VideoClip(make_frame, duration=duration)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SHOT LIST PROMPTS  — one per mode
+# SHOT LIST PROMPTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _shot_prompt_film(topic, source_type, matrix, character_names, script_outline, script_text):
+def _shot_prompt_film(topic, source_type, matrix, character_names,
+                      script_outline, script_text,
+                      has_trailer: bool, is_shorts: bool):
     char_list = ", ".join(character_names) if character_names else "none"
     outline   = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(script_outline))
-    return f"""
+
+    if is_shorts:
+        # Shorts: trailer first, tight clips, no chapter/stat cards
+        trailer_note = (
+            'TRAILER AVAILABLE: Yes — prefer "trailer_clip" for all action/plot moments.'
+            if has_trailer else
+            'TRAILER AVAILABLE: No — use tmdb_backdrop and tmdb_poster as primary visuals.'
+        )
+        return f"""
+You are a video editor cutting a YouTube SHORT (vertical 9:16, under 60 seconds).
+
+FILM TITLE: {topic}
+{trailer_note}
+KNOWN CAST: {char_list}
+SCRIPT: {script_text}
+
+Produce a shot list of EXACTLY 3-6 segments, each 5-12 seconds.
+
+Visual types allowed for Shorts:
+  "trailer_clip"  — segment from the official trailer (PREFERRED if trailer available)
+  "tmdb_poster"   — official film poster
+  "tmdb_backdrop" — cinematic scene still
+  "text_card"     — punchy one-liner card (max 1 in the whole list)
+
+Return ONLY a valid JSON array. Schema per item:
+{{
+  "segment_index": 0, "type": "trailer_clip", "duration_seconds": 8,
+  "trailer_timestamp": 0,
+  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
+  "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
+}}
+
+Rules:
+- trailer_timestamp: approximate second in the trailer to cut from (spread across trailer).
+- If trailer available: at least 60% of clips must be trailer_clip.
+- If trailer not available: use tmdb_backdrop for all visual clips.
+- Sum of duration_seconds must be between 30 and 58 seconds total.
+- DO NOT use chapter_card, stat_card, code_card, or pexels_broll for Shorts.
+"""
+    else:
+        # Long-form
+        trailer_note = (
+            'TRAILER AVAILABLE: Yes — use "trailer_clip" for high-energy action/plot moments.'
+            if has_trailer else
+            'TRAILER AVAILABLE: No — use tmdb_backdrop and pexels_broll for visual coverage.'
+        )
+        return f"""
 You are a video editor planning a YouTube FILM / SERIES REVIEW video.
 
 FILM TITLE: {topic}
 SOURCE TYPE: {source_type}
 TONE MATRIX: {matrix}
+{trailer_note}
 KNOWN CAST MEMBERS: {char_list}
 SCRIPT OUTLINE:
 {outline}
@@ -557,38 +798,67 @@ SCRIPT OUTLINE:
 SCRIPT:
 {script_text}
 
-Produce a shot list. Divide the script into 8-20 timed segments (15-35s each).
+Produce a shot list of 8-20 segments (15-35s each).
 For each segment pick ONE visual type:
 
-  "tmdb_poster"   — official film poster (use for opening title card)
-  "tmdb_backdrop" — cinematic scene still from TMDB
+  "trailer_clip"  — segment from the official trailer (use for plot/action/emotional peaks)
+  "tmdb_poster"   — official film poster (use for opening title card only)
+  "tmdb_backdrop" — cinematic scene still (use for analytical/reflective moments)
   "tmdb_cast"     — headshot of a named cast member (only names from KNOWN CAST MEMBERS)
-  "pexels_broll"  — cinematic B-roll (mood, transitions, gaps)
-  "text_card"     — styled card (RT score, box office, key review line, scene reference)
+  "pexels_broll"  — cinematic B-roll SPECIFIC to this film's world:
+                    queries must reference the film's setting, tone, or themes
+                    (e.g. "lone astronaut deep space dark" not "sci-fi movie")
+  "text_card"     — styled card (RT score, box office, key review line)
   "stat_card"     — big-number card ("$240M opening weekend", "8.4/10 IMDb")
   "chapter_card"  — act transition card from script outline (max 3 total)
 
 Return ONLY a valid JSON array. No markdown. Schema per item:
 {{
-  "segment_index": 0, "type": "tmdb_poster", "duration_seconds": 10,
+  "segment_index": 0, "type": "trailer_clip", "duration_seconds": 12,
+  "trailer_timestamp": 0,
   "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
-  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "", "note": ""
+  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
+  "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
 }}
 
 Rules:
-- Only fill fields relevant to chosen type; leave others as empty string or 0.
-- pexels_query: 3-5 words, only for pexels_broll.
-- cast_name: exact name from KNOWN CAST MEMBERS, only for tmdb_cast.
-- stat_value + stat_desc: only for stat_card.
-- chapter_num + chapter_title: from script outline, only for chapter_card.
-- Sum of duration_seconds ≈ word_count / 130 * 60 seconds.
+- trailer_timestamp: spread timestamps across full trailer (avoid first 2s and last 5s).
+- pexels_query: 4-6 words SPECIFIC to this film's world and atmosphere, NOT genre labels.
+  Good: "lone astronaut deep space silence"  Bad: "sci-fi movie space"
+- cast_name: exact name from KNOWN CAST MEMBERS only.
+- If trailer available: use trailer_clip for 30-50% of clips.
+- If trailer not available: skip trailer_clip entirely.
 - Mix: at least 2 tmdb types, 2 text/stat cards, 1 chapter_card.
+- Sum of duration_seconds ≈ word_count / 130 * 60 seconds.
 """
 
 
-def _shot_prompt_tech(topic, matrix, script_outline, script_text):
+def _shot_prompt_tech(topic, matrix, script_outline, script_text, is_shorts):
     outline = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(script_outline))
-    return f"""
+    if is_shorts:
+        return f"""
+You are a video editor cutting a YouTube SHORT (9:16, under 60 seconds).
+
+TOPIC: {topic}
+SCRIPT: {script_text}
+
+Produce 3-6 segments, each 5-12 seconds.
+Types allowed: "pexels_broll", "text_card", "stat_card" (max 1 each of text/stat).
+
+Return ONLY a valid JSON array. Schema:
+{{
+  "segment_index": 0, "type": "pexels_broll", "duration_seconds": 8,
+  "trailer_timestamp": 0,
+  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
+  "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
+}}
+Rules:
+- pexels_query: 4-6 specific words (e.g. "server room crash red alert", not "technology")
+- Sum 30-58 seconds total.
+"""
+    else:
+        return f"""
 You are a video editor planning a YouTube TECH NEWS / INVESTIGATIVE video.
 
 TOPIC: {topic}
@@ -599,35 +869,55 @@ SCRIPT OUTLINE:
 SCRIPT:
 {script_text}
 
-Produce a shot list. Divide the script into 8-20 timed segments (15-35s each).
-For each segment pick ONE visual type:
+Produce 8-20 segments (15-35s each). Types:
 
-  "pexels_broll"  — cinematic tech B-roll (servers, code screens, offices, data centres)
+  "pexels_broll"  — cinematic tech B-roll SPECIFIC to this incident/product
+                    (e.g. "crowdstrike blue screen windows crash", not "computer error")
   "wiki_image"    — Wikipedia image for a company, product, or person mentioned
-  "text_card"     — headline, key quote, timeline event, error message, policy statement
-  "stat_card"     — big-number impact card ("8.5M users affected", "72hrs downtime")
-  "chapter_card"  — section transition from script outline (max 3 total)
+  "text_card"     — headline, key quote, timeline event, error message
+  "stat_card"     — big-number impact card
+  "chapter_card"  — section transition (max 3 total)
 
-Return ONLY a valid JSON array. No markdown. Schema per item:
+Return ONLY a valid JSON array. Schema:
 {{
   "segment_index": 0, "type": "pexels_broll", "duration_seconds": 20,
-  "pexels_query": "", "wiki_title": "", "text_line1": "", "text_line2": "",
-  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "", "note": ""
+  "trailer_timestamp": 0,
+  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
+  "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
 }}
-
 Rules:
-- pexels_query: 3-5 words, only for pexels_broll.
-- wiki_title: exact Wikipedia article title, only for wiki_image.
-- stat_value + stat_desc: only for stat_card.
-- chapter_num + chapter_title: from script outline, only for chapter_card.
-- Sum of duration_seconds ≈ word_count / 130 * 60 seconds.
+- pexels_query: 4-6 specific words tied to this exact topic, NOT generic tech labels.
+- wiki_title: exact Wikipedia article title.
 - Mix: at least 40% pexels_broll, 2 stat_cards, 1 chapter_card.
+- Sum ≈ word_count / 130 * 60 seconds.
 """
 
 
-def _shot_prompt_edu(topic, matrix, script_outline, script_text):
+def _shot_prompt_edu(topic, matrix, script_outline, script_text, is_shorts):
     outline = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(script_outline))
-    return f"""
+    if is_shorts:
+        return f"""
+You are a video editor cutting a YouTube SHORT (9:16, under 60 seconds).
+
+TOPIC: {topic}
+SCRIPT: {script_text}
+
+Produce 3-6 segments, 5-12 seconds each.
+Types: "pexels_broll", "text_card", "code_card" (max 1 code_card).
+
+Return ONLY a valid JSON array. Schema:
+{{
+  "segment_index": 0, "type": "pexels_broll", "duration_seconds": 8,
+  "trailer_timestamp": 0,
+  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
+  "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
+}}
+Rules: pexels_query 4-6 specific words. Sum 30-58s total.
+"""
+    else:
+        return f"""
 You are a video editor planning a YouTube EDUCATIONAL / TUTORIAL video.
 
 TOPIC: {topic}
@@ -638,33 +928,27 @@ SCRIPT OUTLINE:
 SCRIPT:
 {script_text}
 
-Produce a shot list. Divide the script into 8-20 timed segments (15-35s each).
-For each segment pick ONE visual type:
+Produce 8-20 segments (15-35s each). Types:
 
-  "pexels_broll"  — cinematic concept B-roll matching the topic
+  "pexels_broll"  — concept B-roll SPECIFIC to this topic's visual world
   "wiki_image"    — Wikipedia image for a concept, person, or tool mentioned
   "text_card"     — definition, key term, or important takeaway
-  "code_card"     — dark-themed code snippet (only when script references actual code)
-  "stat_card"     — big-number fact ("O(n log n) complexity", "99.9% uptime")
-  "chapter_card"  — section transition from script outline (max 3 total)
+  "code_card"     — code snippet (only when script references actual code)
+  "stat_card"     — big-number fact
+  "chapter_card"  — section transition (max 3 total)
 
-Return ONLY a valid JSON array. No markdown. Schema per item:
+Return ONLY a valid JSON array. Schema:
 {{
   "segment_index": 0, "type": "pexels_broll", "duration_seconds": 20,
-  "pexels_query": "", "wiki_title": "", "text_line1": "", "text_line2": "",
-  "code_snippet": "", "code_language": "",
-  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "", "note": ""
+  "trailer_timestamp": 0,
+  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
+  "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
 }}
-
 Rules:
-- pexels_query: 3-5 words, only for pexels_broll.
-- wiki_title: exact Wikipedia article title, only for wiki_image.
-- code_snippet: real code, max 12 lines, only for code_card.
-- code_language: e.g. "Python", only for code_card.
-- stat_value + stat_desc: only for stat_card.
-- chapter_num + chapter_title: from script outline, only for chapter_card.
-- Sum of duration_seconds ≈ word_count / 130 * 60 seconds.
+- pexels_query: 4-6 specific words tied to this exact concept.
 - Mix: at least 30% pexels_broll, 2 text/stat cards, 1 chapter_card.
+- Sum ≈ word_count / 130 * 60 seconds.
 """
 
 
@@ -672,7 +956,7 @@ Rules:
 # SHOT LIST GENERATOR
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_shot_list(api_key):
+def generate_shot_list(api_key: str, has_trailer: bool, is_shorts: bool) -> list:
     mode           = st.session_state.get("mode_param", MODE_FILM)
     topic          = st.session_state.get("topic_param", "")
     matrix         = st.session_state.get("matrix_param", "")
@@ -683,12 +967,15 @@ def generate_shot_list(api_key):
 
     if mode == MODE_FILM:
         char_names = [c["name"] for c in package.get("character_matrix", [])]
-        prompt = _shot_prompt_film(topic, source_type, matrix,
-                                   char_names, script_outline, script_text)
+        prompt = _shot_prompt_film(topic, source_type, matrix, char_names,
+                                   script_outline, script_text,
+                                   has_trailer, is_shorts)
     elif mode == MODE_TECH:
-        prompt = _shot_prompt_tech(topic, matrix, script_outline, script_text)
+        prompt = _shot_prompt_tech(topic, matrix, script_outline,
+                                   script_text, is_shorts)
     else:
-        prompt = _shot_prompt_edu(topic, matrix, script_outline, script_text)
+        prompt = _shot_prompt_edu(topic, matrix, script_outline,
+                                  script_text, is_shorts)
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
@@ -706,78 +993,145 @@ def generate_shot_list(api_key):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CLIP RESOLVER  — one shot dict → ndarray
+# CLIP RESOLVER
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
-                  backdrop_idx, topic):
+                  used_urls: set, topic,
+                  trailer_path: str | None, trailer_segs: list,
+                  trailer_idx: list,
+                  cw: int, ch: int,
+                  is_shorts: bool):
+    """Resolve one shot dict to an ndarray (still) or VideoFileClip (trailer segment)."""
     stype = shot.get("type", "text_card")
     arr   = None
+    pexels_orientation = "portrait" if is_shorts else "landscape"
 
-    # Film-specific
-    if stype == "tmdb_poster":
-        urls = tmdb_cache.get("posters", [])
-        if urls:
-            arr = _fetch_array(urls[0])
+    def _fetch_unique(url):
+        """Fetch and mark used; skip if already used."""
+        if not url or url in used_urls:
+            return None
+        a = _fetch_array(url, cw, ch)
+        if a is not None:
+            used_urls.add(url)
+        return a
+
+    # ── TRAILER CLIP ─────────────────────────────────────────────────────────
+    if stype == "trailer_clip":
+        if trailer_path and trailer_segs:
+            idx  = trailer_idx[0] % len(trailer_segs)
+            s, e = trailer_segs[idx]
+            trailer_idx[0] += 1
+            try:
+                vc = VideoFileClip(trailer_path).subclip(s, e)
+                # Resize/fit to canvas
+                if vc.w != cw or vc.h != ch:
+                    # Use _fit_to_canvas frame-by-frame via VideoClip
+                    src_ratio = vc.w / vc.h
+                    tgt_ratio = cw / ch
+                    both_l = src_ratio >= 1.0 and tgt_ratio >= 1.0
+                    both_p = src_ratio <  1.0 and tgt_ratio <  1.0
+                    if both_l or both_p:
+                        scale = max(cw / vc.w, ch / vc.h)
+                        vc = vc.resize(scale).crop(x_center=vc.w*scale/2,
+                                                   y_center=vc.h*scale/2,
+                                                   width=cw, height=ch)
+                    else:
+                        # letterbox/pillarbox via resize to fit
+                        scale = min(cw / vc.w, ch / vc.h)
+                        vc_r  = vc.resize(scale)
+                        # Build blurred bg from first frame
+                        bg_arr = _fit_to_canvas(
+                            Image.fromarray(vc.get_frame(0)), cw, ch)
+                        bg_clip = VideoClip(lambda t, b=bg_arr: b,
+                                            duration=vc.duration)
+                        from moviepy.editor import CompositeVideoClip
+                        ox = (cw - vc_r.w) // 2
+                        oy = (ch - vc_r.h) // 2
+                        vc = CompositeVideoClip(
+                            [bg_clip, vc_r.set_position((ox, oy))],
+                            size=(cw, ch))
+                return vc   # return VideoClip directly, not ndarray
+            except Exception:
+                pass   # fall through to stills
+
+    # ── TMDB ─────────────────────────────────────────────────────────────────
+    elif stype == "tmdb_poster":
+        for url in tmdb_cache.get("posters", []):
+            arr = _fetch_unique(url)
+            if arr is not None:
+                break
 
     elif stype == "tmdb_backdrop":
-        urls = tmdb_cache.get("backdrops", [])
-        if urls:
-            arr = _fetch_array(urls[backdrop_idx[0] % len(urls)])
-            backdrop_idx[0] += 1
+        for url in tmdb_cache.get("backdrops", []):
+            arr = _fetch_unique(url)
+            if arr is not None:
+                break
 
     elif stype == "tmdb_cast":
         name = shot.get("cast_name", "")
         if name and tmdb_key:
             url = _tmdb_cast_photo(name, tmdb_key)
-            if url:
-                arr = _fetch_array(url)
+            arr = _fetch_unique(url)
 
-    # Shared
+    # ── PEXELS ───────────────────────────────────────────────────────────────
     elif stype == "pexels_broll":
         query = shot.get("pexels_query", "cinematic abstract")
         if pexels_key:
-            url = _pexels_image(query, pexels_key, page=(backdrop_idx[0] % 5) + 1)
-            backdrop_idx[0] += 1
-            if url:
-                arr = _fetch_array(url)
+            for page in range(1, 4):
+                url = _pexels_image(query, pexels_key, page=page,
+                                    orientation=pexels_orientation)
+                arr = _fetch_unique(url)
+                if arr is not None:
+                    break
 
+    # ── WIKI ─────────────────────────────────────────────────────────────────
     elif stype == "wiki_image":
         url = _wiki_image(shot.get("wiki_title", topic))
-        if url:
-            arr = _fetch_array(url)
+        arr = _fetch_unique(url)
 
-    # Generated cards
+    # ── GENERATED CARDS ──────────────────────────────────────────────────────
     elif stype == "text_card":
         arr = make_text_card(
             shot.get("text_line1", shot.get("note", topic)),
-            shot.get("text_line2", ""), mode=mode)
+            shot.get("text_line2", ""), mode=mode, cw=cw, ch=ch)
 
     elif stype == "stat_card":
         arr = make_stat_card(
-            shot.get("stat_value", ""), shot.get("stat_desc", ""), mode=mode)
+            shot.get("stat_value", ""), shot.get("stat_desc", ""),
+            mode=mode, cw=cw, ch=ch)
 
     elif stype == "code_card":
         arr = make_code_card(
             shot.get("code_snippet", "# No code provided"),
-            shot.get("code_language", ""))
+            shot.get("code_language", ""), cw=cw, ch=ch)
 
     elif stype == "chapter_card":
         arr = make_chapter_card(
             int(shot.get("chapter_num", 1) or 1),
-            shot.get("chapter_title", shot.get("note", "")), mode=mode)
+            shot.get("chapter_title", shot.get("note", "")),
+            mode=mode, cw=cw, ch=ch)
 
-    # Fallback chain
+    # ── FALLBACK CHAIN ───────────────────────────────────────────────────────
     if arr is None:
-        if pexels_key and stype in ("tmdb_poster", "tmdb_backdrop",
-                                    "tmdb_cast", "wiki_image"):
-            url = _pexels_image(topic + " cinematic", pexels_key)
-            if url:
-                arr = _fetch_array(url)
-    if arr is None:
-        arr = make_text_card(shot.get("note", topic), mode=mode)
+        # 1. Try a fresh Pexels search on the topic
+        if pexels_key:
+            url = _pexels_image(topic + " cinematic", pexels_key,
+                                orientation=pexels_orientation)
+            arr = _fetch_unique(url)
+        # 2. Try any unused TMDB backdrop
+        if arr is None:
+            for url in tmdb_cache.get("backdrops", []):
+                if url not in used_urls:
+                    arr = _fetch_array(url, cw, ch)
+                    if arr is not None:
+                        used_urls.add(url)
+                        break
+        # 3. Text card
+        if arr is None:
+            arr = make_text_card(shot.get("note", topic), mode=mode, cw=cw, ch=ch)
 
-    return arr
+    return arr  # ndarray
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -785,47 +1139,88 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _assembly_worker(audio_path, shot_list, mode, topic,
-                     tmdb_key, pexels_key, output_path):
+                     tmdb_key, pexels_key, output_path,
+                     is_shorts, credit_text):
     try:
-        # Pre-fetch TMDB (film only)
+        cw, ch = _canvas(is_shorts)
+
+        # ── Trailer download (film mode only) ─────────────────────────────────
+        trailer_path = None
+        trailer_segs = []
+        if mode == MODE_FILM:
+            _write_progress(2, "Searching for official trailer…")
+            trailer_path = _download_trailer(topic)
+            if trailer_path:
+                n_segs = 4 if is_shorts else 8
+                trailer_segs = _extract_trailer_segments(
+                    trailer_path, num_segments=n_segs, seg_duration=8.0)
+                _write_progress(6, f"Trailer ready — {len(trailer_segs)} segments")
+            else:
+                _write_progress(6, "Trailer not found — using stills only")
+
+        # ── TMDB pre-fetch ────────────────────────────────────────────────────
         tmdb_cache = {"backdrops": [], "posters": []}
         if mode == MODE_FILM and tmdb_key:
-            _write_progress(3, "Looking up film on TMDB…")
+            _write_progress(8, "Looking up film on TMDB…")
             mid, mtype = _tmdb_lookup(topic, tmdb_key)
             if mid:
                 tmdb_cache = _tmdb_images(mid, mtype or "movie", tmdb_key)
 
+        # ── Build clips ───────────────────────────────────────────────────────
         total        = len(shot_list)
-        backdrop_idx = [0]
+        used_urls    = set()
+        trailer_idx  = [0]
         clips        = []
 
         for i, shot in enumerate(shot_list):
-            pct = 10 + int(72 * i / total)
+            pct = 12 + int(68 * i / total)
             _write_progress(pct,
                 f"Building clip {i+1}/{total} [{shot.get('type','?')}] — "
-                f"{shot.get('note', '')}")
+                f"{shot.get('note','')}")
 
             duration = max(float(shot.get("duration_seconds", 12)), 5.0)
             zoom_in  = (i % 2 == 0)
-            arr = _resolve_clip(shot, mode, tmdb_cache, tmdb_key,
-                                pexels_key, backdrop_idx, topic)
-            clips.append(_zoom_clip(arr, duration, zoom_in))
 
-        _write_progress(84, "Stitching clips…")
+            result = _resolve_clip(
+                shot, mode, tmdb_cache, tmdb_key, pexels_key,
+                used_urls, topic, trailer_path, trailer_segs,
+                trailer_idx, cw, ch, is_shorts)
+
+            if hasattr(result, "duration"):
+                # It's a VideoClip (trailer segment) — use directly
+                clip = result.set_duration(min(result.duration, duration))
+            else:
+                # It's an ndarray still — apply Ken Burns zoom
+                clip = _zoom_clip(result, duration, zoom_in)
+            clips.append(clip)
+
+        # ── Stitch ────────────────────────────────────────────────────────────
+        _write_progress(82, "Stitching clips…")
         video = concatenate_videoclips(clips, method="compose")
 
-        _write_progress(89, "Attaching voiceover…")
+        # ── Audio ─────────────────────────────────────────────────────────────
+        _write_progress(87, "Attaching voiceover…")
         audio = AudioFileClip(audio_path)
 
-        # Match video length to audio
         if video.duration < audio.duration:
             extra  = audio.duration - video.duration + clips[-1].duration
-            filler = _zoom_clip(clips[-1].get_frame(0), extra, zoom_in=False)
+            last_frame = clips[-1].get_frame(0)
+            filler = _zoom_clip(last_frame, extra, zoom_in=False)
             clips[-1] = filler
             video = concatenate_videoclips(clips, method="compose")
 
         final = video.subclip(0, audio.duration).set_audio(audio)
 
+        # ── Credit overlay ────────────────────────────────────────────────────
+        if credit_text:
+            _write_progress(91, "Adding credit overlay…")
+            def _overlay_frame(t):
+                f = final.get_frame(t)
+                return _add_credit_overlay(f, credit_text, is_shorts, cw, ch)
+            final = VideoClip(_overlay_frame, duration=final.duration).set_audio(
+                final.audio)
+
+        # ── Render ────────────────────────────────────────────────────────────
         _write_progress(93, "Rendering MP4 (this takes ~60s)…")
         final.write_videofile(
             output_path, fps=FPS, codec="libx264",
@@ -842,10 +1237,9 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
 # APPLICATION UI
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.title("🖊️ ArchiText")
+st.title("🎬 SudoVid")
 st.caption("AI-Powered Script, Voice & Video Engine")
 
-# SIDEBAR
 with st.sidebar:
     st.header("🔑 Authentication")
     api_key = st.text_input("Gemini API Key", type="password")
@@ -858,14 +1252,9 @@ with st.sidebar:
         st.session_state.clear()
         st.rerun()
 
-# TABS
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "1. Parameters",
-    "2. Ground Research",
-    "3. Generated Script",
-    "4. Voiceover",
-    "5. Content Bundle",
-    "6. Video Assembly",
+    "1. Parameters", "2. Ground Research", "3. Generated Script",
+    "4. Voiceover", "5. Content Bundle", "6. Video Assembly",
 ])
 
 
@@ -877,12 +1266,11 @@ with tab1:
     st.info("Define the scope, tone, and your unique perspective before the AI conducts its research.")
 
     topic = st.text_input("Topic or Title",
-                           placeholder="e.g., The Night Manager Season 2, Crowdstrike Outage")
+                           placeholder="e.g., Project Hail Mary, Crowdstrike Outage")
 
     col_a, col_b = st.columns(2)
     with col_a:
-        active_mode = st.selectbox("Content Mode",
-                                   [MODE_FILM, MODE_TECH, MODE_EDU])
+        active_mode = st.selectbox("Content Mode", [MODE_FILM, MODE_TECH, MODE_EDU])
     with col_b:
         video_length = st.selectbox("Target Video Length", [
             "YouTube Short (< 1 minute)",
@@ -921,15 +1309,14 @@ with tab1:
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("### ✍️ Your Unique Angle (Draft)")
-    st.caption("Upload your notes or type your perspective here. The AI will use this to guide its research in Step 2.")
-    angle_file = st.file_uploader("Upload your rough draft or notes (.txt)", type=["txt"])
-    angle_text = st.text_area("Or type your angle/rough draft here:", height=150,
-                               placeholder="E.g., I think the main character's arc was ruined in episode 4 because…")
+    st.caption("Upload your notes or type your perspective. The AI uses this to guide research.")
+    angle_file = st.file_uploader("Upload rough draft (.txt)", type=["txt"])
+    angle_text = st.text_area("Or type your angle here:", height=150,
+                               placeholder="E.g., I think the main character's arc was ruined because…")
 
     if st.button("💾 Save Parameters & Proceed"):
         final_angle = angle_text.strip() or (
-            angle_file.getvalue().decode("utf-8") if angle_file else ""
-        )
+            angle_file.getvalue().decode("utf-8") if angle_file else "")
         if not topic:
             st.error("⚠️ Please provide a Topic or Title.")
         elif not final_angle:
@@ -941,7 +1328,7 @@ with tab1:
             st.session_state["source_param"] = source_type
             st.session_state["matrix_param"] = json.dumps(matrix_data)
             st.session_state["angle_param"]  = final_angle
-            st.success("✅ Parameters saved! Click the **'2. Ground Research'** tab.")
+            st.success("✅ Parameters saved! Click **'2. Ground Research'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -950,15 +1337,15 @@ with tab1:
 with tab2:
     st.subheader("Step 2: Targeted Intelligence Gathering")
     if "topic_param" not in st.session_state:
-        st.info("Please complete Step 1 (Parameters) first and click 'Save Parameters'.")
+        st.info("Complete Step 1 first.")
     else:
-        st.info(f"🌐 The AI will search the web to fact-check and support your angle on "
+        st.info(f"🌐 Searching the web to support your angle on "
                 f"**{st.session_state['topic_param']}**.")
         if st.button("🔍 Execute Targeted Background Research"):
             if not api_key:
-                st.warning("Please provide a Gemini API Key in the sidebar.")
+                st.warning("Gemini API Key required in sidebar.")
             else:
-                with st.spinner("🌐 Actively searching the web…"):
+                with st.spinner("🌐 Searching…"):
                     st.session_state["research"] = perform_grounded_research(
                         topic       = st.session_state["topic_param"],
                         mode        = st.session_state["mode_param"],
@@ -968,10 +1355,10 @@ with tab2:
                         api_key     = api_key,
                     )
         if "research" in st.session_state:
-            st.success("✅ Targeted Research Complete")
+            st.success("✅ Research Complete")
             with st.expander("View Factual Briefing", expanded=False):
                 st.markdown(st.session_state["research"])
-            st.success("🎉 **Step 2 Complete!** Click the **'3. Generated Script'** tab.")
+            st.success("🎉 **Step 2 Complete!** Click **'3. Generated Script'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -980,10 +1367,10 @@ with tab2:
 with tab3:
     st.subheader("Step 3: Script Generation & Editing")
     if "research" not in st.session_state:
-        st.info("Complete Step 2 (Ground Research) first.")
+        st.info("Complete Step 2 first.")
     else:
         if st.button("🚀 Architect Refined Script"):
-            with st.spinner(f"Synthesizing your script for a {st.session_state['length_param']}…"):
+            with st.spinner(f"Synthesising for {st.session_state['length_param']}…"):
                 st.session_state["package"] = generate_script_package(
                     mode        = st.session_state["mode_param"],
                     topic       = st.session_state["topic_param"],
@@ -999,45 +1386,37 @@ with tab3:
             p = st.session_state["package"]
             if "error" in p:
                 st.error(p["error"])
-                with st.expander("View Raw Output (Debugging)"):
+                with st.expander("Raw Output"):
                     st.text(p.get("raw"))
             else:
                 st.success(f"### {p.get('viral_title')}")
-
-                with st.expander("📊 View Script Architecture Details", expanded=False):
+                with st.expander("📊 Script Architecture Details", expanded=False):
                     st.markdown("#### 🌍 Thematic Resonance")
-                    st.warning(f"**Analogous Event:** {p.get('thematic_resonance', {}).get('real_world_event')}")
+                    st.warning(f"**Analogous Event:** {p.get('thematic_resonance',{}).get('real_world_event')}")
                     st.write(p.get("thematic_resonance", {}).get("explanation"))
                     if st.session_state["mode_param"] == MODE_FILM:
                         for char in p.get("character_matrix", []):
                             st.markdown(
                                 f"**{char['name']}** "
                                 f"<span class='metric-badge'>{char['arc_score']}/10</span>",
-                                unsafe_allow_html=True,
-                            )
+                                unsafe_allow_html=True)
 
                 st.markdown("### 📝 Conversational Script Editor")
                 st.info("💡 Edit below as you want it spoken. Use commas or --- for natural pauses.")
-
                 fs = p.get("full_script", {})
                 default_text = "\n\n".join(filter(None, [
-                    p.get("hook_script", ""),
-                    fs.get("intro", ""),
-                    fs.get("act1",  ""),
-                    fs.get("act2",  ""),
-                    fs.get("act3",  ""),
-                    fs.get("outro", ""),
+                    p.get("hook_script", ""), fs.get("intro", ""),
+                    fs.get("act1", ""),       fs.get("act2", ""),
+                    fs.get("act3", ""),       fs.get("outro", ""),
                 ]))
                 st.session_state["final_script_text"] = st.text_area(
                     "Final Polish:", value=default_text.strip(), height=400)
-
                 st.download_button(
-                    label="📥 Download Text Script",
+                    "📥 Download Text Script",
                     data=st.session_state["final_script_text"],
                     file_name=f"{p.get('viral_title','script').replace(' ','_').lower()}.txt",
-                    mime="text/plain",
-                )
-                st.success("🎉 **Step 3 Complete!** Click the **'4. Voiceover'** tab.")
+                    mime="text/plain")
+                st.success("🎉 **Step 3 Complete!** Click **'4. Voiceover'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1045,7 +1424,7 @@ with tab3:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab4:
     st.subheader("Step 4: AI Voiceover Studio")
-    st.info("Turn your finalized script or a custom uploaded file into professional audio.")
+    st.info("Turn your finalized script into professional audio.")
 
     st.markdown("### 🎙️ Voice Settings")
     voice_option = st.selectbox("Select Narrator (US English)", [
@@ -1067,19 +1446,17 @@ with tab4:
     source_mode = st.radio("Choose Text Source for Voiceover:",
                             ["Use Generated Script (from Tab 3)",
                              "Upload Custom Text File (.txt)"])
-
     text_to_synthesize = ""
     if source_mode == "Use Generated Script (from Tab 3)":
         text_to_synthesize = st.session_state.get("final_script_text", "")
         if not text_to_synthesize:
-            st.warning("⚠️ No generated script found. Complete Steps 1-3 first, "
-                       "or select 'Upload Custom Text File'.")
+            st.warning("⚠️ No generated script found. Complete Steps 1-3 first.")
     else:
-        uploaded_file = st.file_uploader("Upload a .txt file for Voiceover",
+        uploaded_file = st.file_uploader("Upload .txt for Voiceover",
                                           type=["txt"], key="voice_upload")
         if uploaded_file:
             text_to_synthesize = uploaded_file.getvalue().decode("utf-8")
-            st.success("File uploaded successfully!")
+            st.success("File uploaded!")
 
     st.markdown("---")
     st.markdown("### Preview Text for Audio Generation")
@@ -1089,27 +1466,23 @@ with tab4:
 
     if st.button("🔊 Generate Voiceover"):
         if not st.session_state["tab4_audio_text"].strip():
-            st.error("Text box is empty. Please provide text to generate audio.")
+            st.error("Text box is empty.")
         else:
-            with st.spinner(f"Synthesising audio with {voice_option[1]} "
-                            f"(this may take 10-20 seconds)…"):
+            with st.spinner(f"Synthesising with {voice_option[1]}…"):
                 audio_path = generate_audio_sync(
                     st.session_state["tab4_audio_text"], voice_option[0])
                 if audio_path:
-                    # ── save path for Tab 6 ──
                     st.session_state["last_audio_path"] = audio_path
-                    st.success("✅ Audio generated successfully!")
+                    st.success("✅ Audio generated!")
                     st.audio(audio_path, format="audio/mp3")
                     with open(audio_path, "rb") as f:
                         st.download_button(
-                            label="📥 Download Audio File (.mp3)",
-                            data=f,
+                            "📥 Download Audio (.mp3)", data=f,
                             file_name=f"{st.session_state.get('topic_param','voiceover').replace(' ','_').lower()}_voiceover.mp3",
-                            mime="audio/mp3",
-                        )
+                            mime="audio/mp3")
                 else:
-                    st.error("Failed to generate audio. Check your internet connection.")
-            st.success("🎉 **Step 4 Complete!** Click the **'5. Content Bundle'** tab.")
+                    st.error("Audio generation failed. Check internet connection.")
+            st.success("🎉 **Step 4 Complete!** Click **'5. Content Bundle'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1117,24 +1490,21 @@ with tab4:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab5:
     st.subheader("Step 5: YouTube Content Bundle")
-    st.info("Package your final script with a viral title, SEO description, tags, and thumbnail concept.")
+    st.info("Generate SEO title, description, tags, hashtags, and thumbnail prompt.")
 
-    bundle_source = st.radio("Select the script text to use as the foundation:",
+    bundle_source = st.radio("Script source for bundle:",
                               ["Use 'Generated Script' (from Tab 3)",
                                "Use 'Final Audio Text' (from Tab 4)"])
-
     if st.button("📦 Generate Content Bundle"):
-        target_text = (
-            st.session_state.get("final_script_text", "")
-            if bundle_source == "Use 'Generated Script' (from Tab 3)"
-            else st.session_state.get("tab4_audio_text", "")
-        )
+        target_text = (st.session_state.get("final_script_text", "")
+                       if bundle_source == "Use 'Generated Script' (from Tab 3)"
+                       else st.session_state.get("tab4_audio_text", ""))
         if not api_key:
             st.error("⚠️ Gemini API Key required.")
         elif not target_text.strip():
-            st.error("⚠️ Target text is empty. Generate or upload a script first.")
+            st.error("⚠️ Target text is empty.")
         else:
-            with st.spinner("Analysing script and generating YouTube metadata…"):
+            with st.spinner("Generating YouTube metadata…"):
                 st.session_state["yt_bundle"] = generate_youtube_bundle(api_key, target_text)
 
     if "yt_bundle" in st.session_state:
@@ -1144,21 +1514,18 @@ with tab5:
         else:
             st.success("✅ YouTube Bundle Generated!")
             st.markdown("### 📝 YouTube Metadata")
-            st.text_input("**Viral Title**",       value=bundle.get("viral_title",  ""))
-            st.text_area( "**Description**",        value=bundle.get("description",  ""), height=200)
-            col_tags, col_hashes = st.columns(2)
-            with col_tags:
-                st.text_area("**Tags** (comma separated)",
-                             value=", ".join(bundle.get("tags", [])), height=100)
-            with col_hashes:
-                st.text_area("**Hashtags**",
-                             value=" ".join(bundle.get("hashtags", [])), height=100)
+            st.text_input("**Viral Title**",  value=bundle.get("viral_title",  ""))
+            st.text_area( "**Description**",   value=bundle.get("description",  ""), height=200)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.text_area("**Tags**", value=", ".join(bundle.get("tags", [])), height=100)
+            with c2:
+                st.text_area("**Hashtags**", value=" ".join(bundle.get("hashtags", [])), height=100)
             st.markdown("---")
             st.markdown("### 🎨 AI Thumbnail Prompt")
-            st.caption("Copy into Midjourney, DALL-E, or Canva to create your thumbnail.")
-            st.text_area("Suggested Image Prompt:",
-                         value=bundle.get("thumbnail_prompt", ""), height=100)
-            st.success("🎉 **Step 5 Complete!** Click the **'6. Video Assembly'** tab.")
+            st.caption("Paste into Midjourney, DALL-E, or Canva.")
+            st.text_area("Image Prompt:", value=bundle.get("thumbnail_prompt", ""), height=100)
+            st.success("🎉 **Step 5 Complete!** Click **'6. Video Assembly'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1167,41 +1534,48 @@ with tab5:
 with tab6:
     st.subheader("Step 6: Video Assembly")
 
-    mode  = st.session_state.get("mode_param", "")
+    mode      = st.session_state.get("mode_param", "")
     topic_val = st.session_state.get("topic_param", "")
+    length_val = st.session_state.get("length_param", "")
+    is_shorts = "Short" in length_val
 
     mode_labels = {MODE_FILM: "🎬 Film & Series",
                    MODE_TECH: "🔍 Tech / Investigative",
                    MODE_EDU:  "📚 Educational"}
     if mode:
-        st.info(f"Mode: **{mode_labels.get(mode, mode)}** — Topic: **{topic_val}**")
+        shorts_badge = " — 📱 **Shorts 9:16**" if is_shorts else " — 🖥️ **Landscape 16:9**"
+        st.info(f"Mode: **{mode_labels.get(mode, mode)}** — Topic: **{topic_val}**{shorts_badge}")
 
     # API Keys
     with st.expander("🔑 Image API Keys", expanded=True):
-        col1, col2 = st.columns(2)
-        with col1:
+        c1, c2 = st.columns(2)
+        with c1:
             tmdb_key = st.text_input(
                 "TMDB API Key"
-                + (" *(required for film stills)*"
-                   if mode == MODE_FILM
-                   else " *(not used for this mode)*"),
-                type="password", key="tmdb_key_input",
-            )
-        with col2:
+                + (" *(required — film stills & cast)*"
+                   if mode == MODE_FILM else " *(not used for this mode)*"),
+                type="password", key="tmdb_key_input")
+        with c2:
             pexels_key = st.text_input(
                 "Pexels API Key *(required — free at pexels.com/api)*",
-                type="password", key="pexels_key_input",
-            )
+                type="password", key="pexels_key_input")
+
+    # Credit text
+    default_credit = f"Courtesy: {topic_val}" if topic_val else "Courtesy: Studio Name"
+    credit_text = st.text_input(
+        "Credit Text (shown on video)",
+        value=default_credit,
+        help="Shorts: top centre white pill. Long format: bottom left small white text.")
 
     st.markdown("---")
 
-    # Pre-flight checks
-    audio_path_v = st.session_state.get("last_audio_path", "")
+    # Pre-flight
+    audio_path_v  = st.session_state.get("last_audio_path", "")
     script_text_v = st.session_state.get("final_script_text", "")
 
     missing = []
     if not audio_path_v or not os.path.exists(audio_path_v):
-        missing.append("✗ No audio file — complete Step 4 (Voiceover) first")
+        missing.append("✗ No audio — complete Step 4 first")
     if not script_text_v:
         missing.append("✗ No script — complete Step 3 first")
     if not topic_val:
@@ -1217,10 +1591,27 @@ with tab6:
         for m in missing:
             st.warning(m)
     else:
-        # Shot list generation
+        # Trailer fetch (film, non-shorts optional preview)
+        if mode == MODE_FILM:
+            if st.button("🎞️ Pre-fetch Trailer (optional but recommended)"):
+                with st.spinner(f"Downloading official trailer for {topic_val}…"):
+                    tp = _download_trailer(topic_val)
+                    if tp:
+                        segs = _extract_trailer_segments(tp)
+                        st.session_state["trailer_path"] = tp
+                        st.session_state["trailer_segs"] = segs
+                        st.success(f"✅ Trailer ready — {len(segs)} segments available")
+                    else:
+                        st.session_state["trailer_path"] = None
+                        st.session_state["trailer_segs"] = []
+                        st.warning("Trailer not found. Assembly will use stills only.")
+
+        # Shot list
         if st.button("🎬 Generate Shot List"):
+            trailer_available = bool(st.session_state.get("trailer_path"))
             with st.spinner("Gemini is planning your shot list…"):
-                st.session_state["shot_list"] = generate_shot_list(api_key)
+                st.session_state["shot_list"] = generate_shot_list(
+                    api_key, has_trailer=trailer_available, is_shorts=is_shorts)
 
         if "shot_list" in st.session_state:
             sl        = st.session_state["shot_list"]
@@ -1228,11 +1619,11 @@ with tab6:
             st.success(f"Shot list ready — **{len(sl)} clips**, ~**{int(total_dur)}s** total")
 
             type_icons = {
-                "tmdb_poster":  "🖼️", "tmdb_backdrop": "🎞️",
-                "tmdb_cast":    "👤", "pexels_broll":  "🌆",
-                "wiki_image":   "📖", "text_card":     "📝",
-                "stat_card":    "📊", "code_card":     "💻",
-                "chapter_card": "📌",
+                "trailer_clip": "🎬", "tmdb_poster":  "🖼️",
+                "tmdb_backdrop":"🎞️", "tmdb_cast":    "👤",
+                "pexels_broll": "🌆", "wiki_image":   "📖",
+                "text_card":    "📝", "stat_card":    "📊",
+                "code_card":    "💻", "chapter_card": "📌",
             }
             with st.expander("📋 View Shot List", expanded=False):
                 for s in sl:
@@ -1240,15 +1631,13 @@ with tab6:
                     detail = (s.get("pexels_query") or s.get("cast_name") or
                               s.get("wiki_title")   or s.get("text_line1") or
                               s.get("stat_value")   or s.get("chapter_title") or
-                              s.get("note", ""))
+                              s.get("trailer_timestamp") or s.get("note", ""))
                     st.markdown(
                         f"`{s.get('segment_index',0):02d}` {icon} "
                         f"**{s.get('type','')}** — "
-                        f"{s.get('duration_seconds','?')}s — _{detail}_"
-                    )
+                        f"{s.get('duration_seconds','?')}s — _{detail}_")
 
             st.markdown("---")
-
             output_path = os.path.join(tempfile.gettempdir(), "sa_output_video.mp4")
 
             if "assembly_running" not in st.session_state:
@@ -1270,6 +1659,8 @@ with tab6:
                             tmdb_key    = tmdb_key,
                             pexels_key  = pexels_key,
                             output_path = output_path,
+                            is_shorts   = is_shorts,
+                            credit_text = credit_text,
                         ),
                         daemon=True,
                     )
@@ -1278,11 +1669,9 @@ with tab6:
 
             if st.session_state.get("assembly_running"):
                 prog = _read_progress()
-
                 if prog.get("error"):
                     st.error(f"Assembly failed: {prog['error']}")
                     st.session_state["assembly_running"] = False
-
                 elif prog.get("done") and prog.get("pct", 0) == 100:
                     st.session_state["assembly_running"] = False
                     st.success("✅ Video assembled successfully!")
@@ -1290,27 +1679,25 @@ with tab6:
                     if os.path.exists(out):
                         with open(out, "rb") as f:
                             st.download_button(
-                                label="📥 Download MP4",
-                                data=f,
-                                file_name=f"{topic_val.replace(' ','_').lower()}_video.mp4",
-                                mime="video/mp4",
-                            )
+                                "📥 Download MP4", data=f,
+                                file_name=f"{topic_val.replace(' ','_').lower()}"
+                                          f"{'_shorts' if is_shorts else ''}_video.mp4",
+                                mime="video/mp4")
                     if st.button("🔄 Reset & Assemble Again"):
-                        for k in ("shot_list", "assembly_running", "assembly_output"):
+                        for k in ("shot_list", "assembly_running",
+                                  "assembly_output", "trailer_path", "trailer_segs"):
                             st.session_state.pop(k, None)
                         st.rerun()
-
                 else:
                     pct = prog.get("pct", 0)
                     msg = prog.get("msg", "Working…")
                     st.progress(pct / 100, text=f"{msg} ({pct}%)")
-                    st.caption("⏳ Keep this tab open. Closing or idling will lose progress.")
+                    st.caption("⏳ Keep this tab open.")
                     time.sleep(3)
                     st.rerun()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FOOTER
 # ─────────────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption("ArchiText v1.0 | AI-Powered Script, Voice & Video Engine")
+st.caption("SudoVid v1.0 | AI-Powered Script, Voice & Video Engine")

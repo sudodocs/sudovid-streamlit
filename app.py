@@ -10,6 +10,7 @@ import textwrap
 import requests
 import os
 import re
+import bisect
 import numpy as np
 import edge_tts
 from io import BytesIO
@@ -506,31 +507,91 @@ def _wiki_image(query):
 # TRAILER DOWNLOAD & SEGMENTATION  (Film mode, yt-dlp)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _find_trailer_url(topic: str) -> str | None:
+    """
+    Search YouTube via HTTP (no yt-dlp search API) and return the first
+    matching video URL. Uses requests to scrape video IDs from the search
+    results page — avoids yt-dlp's ytsearch which hits a rate-limited API.
+    """
+    import warnings
+    warnings.filterwarnings("ignore", message="Unverified HTTPS")
+    query = f"{topic} official trailer"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        r = requests.get(
+            "https://www.youtube.com/results",
+            params={"search_query": query},
+            headers=headers,
+            timeout=15,
+            verify=False,
+        )
+        ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', r.text)
+        seen: set = set()
+        unique = [v for v in ids if not (v in seen or seen.add(v))]
+        if unique:
+            return f"https://www.youtube.com/watch?v={unique[0]}"
+    except Exception:
+        pass
+    return None
+
+
 def _download_trailer(topic: str) -> str | None:
     """
-    Search YouTube for '{topic} official trailer', download the best match
-    at 720p into a temp file. Returns path to .mp4 or None on failure.
-    Strips the last studio-logo slate (final 5s) automatically.
+    Find and download the official trailer for a film/series at up to 720p.
+    Uses a two-step approach:
+      1. HTTP search on YouTube to get a direct video URL (avoids yt-dlp
+         search API which is frequently rate-limited on cloud servers)
+      2. yt-dlp to download that URL with SSL verification disabled
+         (needed on Streamlit Cloud due to proxy SSL chain)
+    Falls back to yt-dlp ytsearch as a secondary attempt if step 1 fails.
+    Returns path to downloaded .mp4, or None on failure.
     """
     try:
         import yt_dlp
-        out_path = os.path.join(tempfile.gettempdir(),
-                                f"trailer_{re.sub(r'[^a-z0-9]', '_', topic.lower())}.mp4")
+        out_path = os.path.join(
+            tempfile.gettempdir(),
+            f"trailer_{re.sub(r'[^a-z0-9]', '_', topic.lower())}.mp4"
+        )
         if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
             return out_path   # reuse cached download
 
         ydl_opts = {
-            "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]",
-            "outtmpl": out_path,
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "default_search": "ytsearch1",
-            "merge_output_format": "mp4",
+            "format": (
+                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
+                "/bestvideo[height<=720]+bestaudio"
+                "/best[height<=720]"
+                "/best"
+            ),
+            "outtmpl":              out_path,
+            "quiet":                True,
+            "no_warnings":          True,
+            "noplaylist":           True,
+            "merge_output_format":  "mp4",
+            "nocheckcertificate":   True,   # handles Streamlit Cloud proxy SSL
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            },
         }
-        query = f"{topic} official trailer"
+
+        # Step 1 — HTTP search to get a direct URL (more reliable on cloud IPs)
+        video_url = _find_trailer_url(topic)
+
+        # Step 2 — fallback to yt-dlp search if HTTP search failed
+        if not video_url:
+            video_url = f"ytsearch1:{topic} official trailer"
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f"ytsearch1:{query}"])
+            ydl.download([video_url])
 
         if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
             return out_path
@@ -1002,9 +1063,14 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
                   trailer_idx: list,
                   cw: int, ch: int,
                   is_shorts: bool):
-    """Resolve one shot dict to an ndarray (still) or VideoFileClip (trailer segment)."""
+    """
+    Resolve one shot dict to (visual, credit_str).
+    visual  → ndarray (still) or VideoFileClip (trailer segment)
+    credit_str → attribution string for this clip, or "" for generated cards
+    """
     stype = shot.get("type", "text_card")
     arr   = None
+    clip_credit = ""
     pexels_orientation = "portrait" if is_shorts else "landscape"
 
     def _fetch_unique(url):
@@ -1051,7 +1117,8 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
                         vc = CompositeVideoClip(
                             [bg_clip, vc_r.set_position((ox, oy))],
                             size=(cw, ch))
-                return vc   # return VideoClip directly, not ndarray
+                clip_credit = f"Courtesy: {topic} Official Trailer / YouTube"
+                return vc, clip_credit   # return VideoClip directly, not ndarray
             except Exception:
                 pass   # fall through to stills
 
@@ -1060,12 +1127,14 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
         for url in tmdb_cache.get("posters", []):
             arr = _fetch_unique(url)
             if arr is not None:
+                clip_credit = "Images courtesy: TMDB (themoviedb.org)"
                 break
 
     elif stype == "tmdb_backdrop":
         for url in tmdb_cache.get("backdrops", []):
             arr = _fetch_unique(url)
             if arr is not None:
+                clip_credit = "Images courtesy: TMDB (themoviedb.org)"
                 break
 
     elif stype == "tmdb_cast":
@@ -1073,6 +1142,8 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
         if name and tmdb_key:
             url = _tmdb_cast_photo(name, tmdb_key)
             arr = _fetch_unique(url)
+            if arr is not None:
+                clip_credit = "Images courtesy: TMDB (themoviedb.org)"
 
     # ── PEXELS ───────────────────────────────────────────────────────────────
     elif stype == "pexels_broll":
@@ -1083,12 +1154,15 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
                                     orientation=pexels_orientation)
                 arr = _fetch_unique(url)
                 if arr is not None:
+                    clip_credit = "Images courtesy: Pexels (pexels.com)"
                     break
 
     # ── WIKI ─────────────────────────────────────────────────────────────────
     elif stype == "wiki_image":
         url = _wiki_image(shot.get("wiki_title", topic))
         arr = _fetch_unique(url)
+        if arr is not None:
+            clip_credit = "Images courtesy: Wikipedia (wikipedia.org)"
 
     # ── GENERATED CARDS ──────────────────────────────────────────────────────
     elif stype == "text_card":
@@ -1119,6 +1193,8 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
             url = _pexels_image(topic + " cinematic", pexels_key,
                                 orientation=pexels_orientation)
             arr = _fetch_unique(url)
+            if arr is not None:
+                clip_credit = "Images courtesy: Pexels (pexels.com)"
         # 2. Try any unused TMDB backdrop
         if arr is None:
             for url in tmdb_cache.get("backdrops", []):
@@ -1126,12 +1202,14 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
                     arr = _fetch_array(url, cw, ch)
                     if arr is not None:
                         used_urls.add(url)
+                        clip_credit = "Images courtesy: TMDB (themoviedb.org)"
                         break
-        # 3. Text card
+        # 3. Text card — no credit needed, it is original generated content
         if arr is None:
             arr = make_text_card(shot.get("note", topic), mode=mode, cw=cw, ch=ch)
+            clip_credit = ""
 
-    return arr  # ndarray
+    return arr, clip_credit  # ndarray or VideoClip, plus attribution string
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1140,7 +1218,7 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
 
 def _assembly_worker(audio_path, shot_list, mode, topic,
                      tmdb_key, pexels_key, output_path,
-                     is_shorts, credit_text):
+                     is_shorts, credit_override):
     try:
         cw, ch = _canvas(is_shorts)
 
@@ -1172,6 +1250,10 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
         trailer_idx  = [0]
         clips        = []
 
+        clip_credits  = []   # parallel list: credit string per clip
+        clip_starts   = []   # cumulative start time per clip for lookup
+        running_time  = 0.0
+
         for i, shot in enumerate(shot_list):
             pct = 12 + int(68 * i / total)
             _write_progress(pct,
@@ -1181,17 +1263,21 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
             duration = max(float(shot.get("duration_seconds", 12)), 5.0)
             zoom_in  = (i % 2 == 0)
 
-            result = _resolve_clip(
+            visual, auto_credit = _resolve_clip(
                 shot, mode, tmdb_cache, tmdb_key, pexels_key,
                 used_urls, topic, trailer_path, trailer_segs,
                 trailer_idx, cw, ch, is_shorts)
 
-            if hasattr(result, "duration"):
+            if hasattr(visual, "duration"):
                 # It's a VideoClip (trailer segment) — use directly
-                clip = result.set_duration(min(result.duration, duration))
+                clip = visual.set_duration(min(visual.duration, duration))
             else:
                 # It's an ndarray still — apply Ken Burns zoom
-                clip = _zoom_clip(result, duration, zoom_in)
+                clip = _zoom_clip(visual, duration, zoom_in)
+
+            clip_starts.append(running_time)
+            clip_credits.append(auto_credit)
+            running_time += duration
             clips.append(clip)
 
         # ── Stitch ────────────────────────────────────────────────────────────
@@ -1209,16 +1295,29 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
             clips[-1] = filler
             video = concatenate_videoclips(clips, method="compose")
 
-        final = video.subclip(0, audio.duration).set_audio(audio)
+        # Capture the assembled video before reassigning 'final' — this
+        # prevents the credit overlay closure from recursing into itself.
+        _assembled = video.subclip(0, audio.duration).set_audio(audio)
 
         # ── Credit overlay ────────────────────────────────────────────────────
-        if credit_text:
-            _write_progress(91, "Adding credit overlay…")
-            def _overlay_frame(t):
-                f = final.get_frame(t)
-                return _add_credit_overlay(f, credit_text, is_shorts, cw, ch)
-            final = VideoClip(_overlay_frame, duration=final.duration).set_audio(
-                final.audio)
+        _write_progress(91, "Adding credit overlay…")
+
+        def _credit_at(t):
+            """Return the credit string active at time t in the final video."""
+            if credit_override:
+                return credit_override
+            idx = bisect.bisect_right(clip_starts, t) - 1
+            idx = max(0, min(idx, len(clip_credits) - 1))
+            return clip_credits[idx]
+
+        # _overlay_frame closes over _assembled (not 'final'), so reassigning
+        # final below does not cause infinite recursion.
+        def _overlay_frame(t):
+            f = _assembled.get_frame(t)
+            return _add_credit_overlay(f, _credit_at(t), is_shorts, cw, ch)
+
+        final = VideoClip(_overlay_frame, duration=_assembled.duration).set_audio(
+            _assembled.audio)
 
         # ── Render ────────────────────────────────────────────────────────────
         _write_progress(93, "Rendering MP4 (this takes ~60s)…")
@@ -1240,13 +1339,64 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
 st.title("🎬 SudoVid")
 st.caption("AI-Powered Script, Voice & Video Engine")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# KEY RESOLUTION  — secrets take priority; UI inputs are the fallback
+# ─────────────────────────────────────────────────────────────────────────────
+def _secret(key: str) -> str:
+    """Return st.secrets[key] if it exists, else empty string."""
+    try:
+        return st.secrets[key]
+    except Exception:
+        return ""
+
+_gemini_from_secret = bool(_secret("GEMINI_API_KEY"))
+_tmdb_from_secret   = bool(_secret("TMDB_API_KEY"))
+_pexels_from_secret = bool(_secret("PEXELS_API_KEY"))
+
 with st.sidebar:
-    st.header("🔑 Authentication")
-    api_key = st.text_input("Gemini API Key", type="password")
-    if api_key:
-        st.success("✓ Gemini API Key provided")
+    st.header("🔑 API Keys")
+
+    # ── Gemini ────────────────────────────────────────────────────────────────
+    if _gemini_from_secret:
+        api_key = _secret("GEMINI_API_KEY")
+        st.success("✓ Gemini (from Secrets)")
     else:
-        st.warning("⚠️ Gemini API Key required")
+        api_key = st.text_input(
+            "Gemini API Key", type="password",
+            help="Add GEMINI_API_KEY to Streamlit Secrets to hide this field")
+        if api_key:
+            st.success("✓ Gemini API Key set")
+        else:
+            st.warning("⚠️ Gemini API Key required")
+
+    # ── TMDB ─────────────────────────────────────────────────────────────────
+    if _tmdb_from_secret:
+        tmdb_key = _secret("TMDB_API_KEY")
+        st.success("✓ TMDB (from Secrets)")
+    else:
+        tmdb_key = st.text_input(
+            "TMDB API Key", type="password",
+            help="Required for Film & Series stills and cast photos. "
+                 "Free at themoviedb.org/settings/api — or add TMDB_API_KEY to Secrets")
+        if tmdb_key:
+            st.success("✓ TMDB API Key set")
+        else:
+            st.caption("TMDB key needed for Film & Series mode")
+
+    # ── Pexels ────────────────────────────────────────────────────────────────
+    if _pexels_from_secret:
+        pexels_key = _secret("PEXELS_API_KEY")
+        st.success("✓ Pexels (from Secrets)")
+    else:
+        pexels_key = st.text_input(
+            "Pexels API Key", type="password",
+            help="Required for all modes. Free at pexels.com/api — "
+                 "or add PEXELS_API_KEY to Secrets")
+        if pexels_key:
+            st.success("✓ Pexels API Key set")
+        else:
+            st.warning("⚠️ Pexels API Key required")
+
     st.divider()
     if st.button("Reset All Steps"):
         st.session_state.clear()
@@ -1546,26 +1696,21 @@ with tab6:
         shorts_badge = " — 📱 **Shorts 9:16**" if is_shorts else " — 🖥️ **Landscape 16:9**"
         st.info(f"Mode: **{mode_labels.get(mode, mode)}** — Topic: **{topic_val}**{shorts_badge}")
 
-    # API Keys
-    with st.expander("🔑 Image API Keys", expanded=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            tmdb_key = st.text_input(
-                "TMDB API Key"
-                + (" *(required — film stills & cast)*"
-                   if mode == MODE_FILM else " *(not used for this mode)*"),
-                type="password", key="tmdb_key_input")
-        with c2:
-            pexels_key = st.text_input(
-                "Pexels API Key *(required — free at pexels.com/api)*",
-                type="password", key="pexels_key_input")
+    # API keys are resolved from sidebar (or Streamlit Secrets) — no input needed here
 
-    # Credit text
-    default_credit = f"Courtesy: {topic_val}" if topic_val else "Courtesy: Studio Name"
-    credit_text = st.text_input(
-        "Credit Text (shown on video)",
-        value=default_credit,
-        help="Shorts: top centre white pill. Long format: bottom left small white text.")
+    # Credit override (optional — auto-credits are used by default)
+    override_on = st.checkbox(
+        "✏️ Override automatic credits",
+        value=False,
+        help="By default credits are set automatically per clip source (TMDB, Pexels, trailer, Wikipedia). Enable this to write your own single credit line for the whole video.")
+    credit_override = ""
+    if override_on:
+        credit_override = st.text_input(
+            "Custom credit text",
+            value=f"Courtesy: {topic_val}" if topic_val else "Courtesy: Studio Name",
+            help="Shorts: top centre white pill. Long format: bottom left small white text.")
+    else:
+        st.caption("🤖 Credits will be set automatically per clip — TMDB, Pexels, trailer, or Wikipedia as appropriate.")
 
     st.markdown("---")
 
@@ -1585,16 +1730,21 @@ with tab6:
     if not pexels_key:
         missing.append("✗ Pexels API Key required above")
     if mode == MODE_FILM and not tmdb_key:
-        missing.append("✗ TMDB API Key required for Film & Series mode")
+        missing.append("✗ TMDB API Key required for Film & Series mode — add it in the sidebar")
 
     if missing:
         for m in missing:
             st.warning(m)
     else:
-        # Trailer fetch (film, non-shorts optional preview)
+        # Trailer fetch (film mode only)
         if mode == MODE_FILM:
+            st.caption(
+                "ℹ️ Trailers are sourced from **YouTube** (not TMDB). "
+                "Your TMDB key is used for stills and cast photos only. "
+                "Trailer download requires the app server to reach youtube.com."
+            )
             if st.button("🎞️ Pre-fetch Trailer (optional but recommended)"):
-                with st.spinner(f"Downloading official trailer for {topic_val}…"):
+                with st.spinner(f"Searching YouTube for {topic_val} official trailer…"):
                     tp = _download_trailer(topic_val)
                     if tp:
                         segs = _extract_trailer_segments(tp)
@@ -1604,7 +1754,11 @@ with tab6:
                     else:
                         st.session_state["trailer_path"] = None
                         st.session_state["trailer_segs"] = []
-                        st.warning("Trailer not found. Assembly will use stills only.")
+                        st.warning(
+                            "Trailer download failed. This usually means the server "
+                            "cannot reach YouTube (network restriction on some cloud "
+                            "hosts). Assembly will use TMDB stills and Pexels B-roll instead."
+                        )
 
         # Shot list
         if st.button("🎬 Generate Shot List"):
@@ -1652,15 +1806,15 @@ with tab6:
                     t = threading.Thread(
                         target=_assembly_worker,
                         kwargs=dict(
-                            audio_path  = audio_path_v,
-                            shot_list   = sl,
-                            mode        = mode,
-                            topic       = topic_val,
-                            tmdb_key    = tmdb_key,
-                            pexels_key  = pexels_key,
-                            output_path = output_path,
-                            is_shorts   = is_shorts,
-                            credit_text = credit_text,
+                            audio_path      = audio_path_v,
+                            shot_list       = sl,
+                            mode            = mode,
+                            topic           = topic_val,
+                            tmdb_key        = tmdb_key,
+                            pexels_key      = pexels_key,
+                            output_path     = output_path,
+                            is_shorts       = is_shorts,
+                            credit_override = credit_override,
                         ),
                         daemon=True,
                     )

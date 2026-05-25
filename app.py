@@ -507,50 +507,63 @@ def _wiki_image(query):
 # TRAILER DOWNLOAD & SEGMENTATION  (Film mode, yt-dlp)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _find_trailer_url(topic: str) -> str | None:
+def _tmdb_trailer_key(topic: str, tmdb_key: str) -> str | None:
     """
-    Search YouTube via HTTP (no yt-dlp search API) and return the first
-    matching video URL. Uses requests to scrape video IDs from the search
-    results page — avoids yt-dlp's ytsearch which hits a rate-limited API.
+    Ask TMDB for the official trailer YouTube video ID.
+    Uses TMDB /search/multi → /movie|tv/{id}/videos.
+    Returns a YouTube video ID (11 chars) or None.
+    This avoids YouTube search entirely — TMDB knows the exact video ID.
     """
-    import warnings
-    warnings.filterwarnings("ignore", message="Unverified HTTPS")
-    query = f"{topic} official trailer"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    if not tmdb_key:
+        return None
     try:
+        # Step 1: find the media ID
         r = requests.get(
-            "https://www.youtube.com/results",
-            params={"search_query": query},
-            headers=headers,
-            timeout=15,
-            verify=False,
-        )
-        ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', r.text)
-        seen: set = set()
-        unique = [v for v in ids if not (v in seen or seen.add(v))]
-        if unique:
-            return f"https://www.youtube.com/watch?v={unique[0]}"
+            f"{TMDB_BASE}/search/multi",
+            params={"api_key": tmdb_key, "query": topic},
+            timeout=10, verify=False,
+        ).json()
+        hits = r.get("results", [])
+        if not hits:
+            return None
+        media_id   = hits[0]["id"]
+        media_type = hits[0].get("media_type", "movie")
+        if media_type not in ("movie", "tv"):
+            media_type = "movie"
+
+        # Step 2: fetch video list
+        rv = requests.get(
+            f"{TMDB_BASE}/{media_type}/{media_id}/videos",
+            params={"api_key": tmdb_key},
+            timeout=10, verify=False,
+        ).json()
+
+        # Step 3: pick best YouTube trailer
+        results = rv.get("results", [])
+        for type_pref in ("Trailer", "Teaser"):
+            for v in results:
+                if v.get("site") == "YouTube" and v.get("type") == type_pref:
+                    return v["key"]
+        # Any YouTube video as last resort
+        for v in results:
+            if v.get("site") == "YouTube":
+                return v["key"]
     except Exception:
         pass
     return None
 
 
-def _download_trailer(topic: str) -> str | None:
+def _download_trailer(topic: str, tmdb_key: str = "") -> str | None:
     """
-    Find and download the official trailer for a film/series at up to 720p.
-    Uses a two-step approach:
-      1. HTTP search on YouTube to get a direct video URL (avoids yt-dlp
-         search API which is frequently rate-limited on cloud servers)
-      2. yt-dlp to download that URL with SSL verification disabled
-         (needed on Streamlit Cloud due to proxy SSL chain)
-    Falls back to yt-dlp ytsearch as a secondary attempt if step 1 fails.
-    Returns path to downloaded .mp4, or None on failure.
+    Download the official trailer for a film/series at up to 720p.
+
+    Strategy (in order):
+      1. TMDB /videos → exact YouTube video ID (most reliable, no search)
+      2. yt-dlp ytsearch as fallback if TMDB lookup fails or no key given
+
+    Uses nocheckcertificate to handle Streamlit Cloud proxy SSL chain.
+    Caches the download in /tmp so re-runs are instant.
+    Returns path to .mp4 or None on failure.
     """
     try:
         import yt_dlp
@@ -568,12 +581,12 @@ def _download_trailer(topic: str) -> str | None:
                 "/best[height<=720]"
                 "/best"
             ),
-            "outtmpl":              out_path,
-            "quiet":                True,
-            "no_warnings":          True,
-            "noplaylist":           True,
-            "merge_output_format":  "mp4",
-            "nocheckcertificate":   True,   # handles Streamlit Cloud proxy SSL
+            "outtmpl":             out_path,
+            "quiet":               True,
+            "no_warnings":         True,
+            "noplaylist":          True,
+            "merge_output_format": "mp4",
+            "nocheckcertificate":  True,
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -583,11 +596,12 @@ def _download_trailer(topic: str) -> str | None:
             },
         }
 
-        # Step 1 — HTTP search to get a direct URL (more reliable on cloud IPs)
-        video_url = _find_trailer_url(topic)
-
-        # Step 2 — fallback to yt-dlp search if HTTP search failed
-        if not video_url:
+        # Step 1 — TMDB gives us the exact YouTube ID (no YouTube search)
+        yt_key = _tmdb_trailer_key(topic, tmdb_key)
+        if yt_key:
+            video_url = f"https://www.youtube.com/watch?v={yt_key}"
+        else:
+            # Step 2 — fallback: yt-dlp keyword search
             video_url = f"ytsearch1:{topic} official trailer"
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1227,7 +1241,7 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
         trailer_segs = []
         if mode == MODE_FILM:
             _write_progress(2, "Searching for official trailer…")
-            trailer_path = _download_trailer(topic)
+            trailer_path = _download_trailer(topic, tmdb_key)
             if trailer_path:
                 n_segs = 4 if is_shorts else 8
                 trailer_segs = _extract_trailer_segments(
@@ -1745,7 +1759,7 @@ with tab6:
             )
             if st.button("🎞️ Pre-fetch Trailer (optional but recommended)"):
                 with st.spinner(f"Searching YouTube for {topic_val} official trailer…"):
-                    tp = _download_trailer(topic_val)
+                    tp = _download_trailer(topic_val, tmdb_key)
                     if tp:
                         segs = _extract_trailer_segments(tp)
                         st.session_state["trailer_path"] = tp

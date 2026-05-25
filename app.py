@@ -1,5 +1,5 @@
 import streamlit as st
-import google.generativeai as genai
+import google.generativeai as genai  # kept for GenerativeModel / configure
 import json
 import time
 import math
@@ -105,6 +105,14 @@ _TECH_ACC = (234, 88,  12)
 _EDU_ACC  = (22, 163,  74)
 _TEXT_HI  = (240, 245, 255)
 _TEXT_LO  = (148, 163, 184)
+
+# ── android_vr User-Agent used for yt-dlp trailer downloads ──────────────────
+# Matches the android_vr innertube client identity so YouTube CDN serves the
+# correct stream URLs.  Must be updated if yt-dlp bumps the client version.
+_ANDROID_VR_UA = (
+    "com.google.android.apps.youtube.vr.oculus/1.57.29 "
+    "(Linux; Android 12; Build/SQ3A.220705.003.A1) gzip"
+)
 
 
 def _canvas(is_shorts: bool) -> tuple:
@@ -521,7 +529,7 @@ def _tmdb_trailer_key(topic: str, tmdb_key: str) -> str | None:
         r = requests.get(
             f"{TMDB_BASE}/search/multi",
             params={"api_key": tmdb_key, "query": topic},
-            timeout=10, verify=False,
+            timeout=10,
         ).json()
         hits = r.get("results", [])
         if not hits:
@@ -535,7 +543,7 @@ def _tmdb_trailer_key(topic: str, tmdb_key: str) -> str | None:
         rv = requests.get(
             f"{TMDB_BASE}/{media_type}/{media_id}/videos",
             params={"api_key": tmdb_key},
-            timeout=10, verify=False,
+            timeout=10,
         ).json()
 
         # Step 3: pick best YouTube trailer
@@ -553,6 +561,75 @@ def _tmdb_trailer_key(topic: str, tmdb_key: str) -> str | None:
     return None
 
 
+def _build_ydl_opts(out_path: str) -> dict:
+    """
+    Build yt-dlp options safe for Streamlit Cloud (server / datacenter IP).
+
+    WHY android_vr?
+    ───────────────
+    YouTube's CDN hands out GVS (Google Video Server) tokens differently
+    depending on which InnerTube client identity is used.  Web, iOS, and
+    vanilla Android clients all require a GVS PO token that YouTube only
+    issues to requests coming from real browser sessions — datacenter IPs
+    get 403 Forbidden.
+
+    The android_vr client (YouTube VR / Oculus) is exempt from this policy:
+      • REQUIRE_JS_PLAYER  = False  → no Deno/Node.js needed on the server
+      • REQUIRE_AUTH       = False  → no cookies or login
+      • GVS_PO_TOKEN_POLICY required = False for ALL protocols (HTTPS, DASH, HLS)
+      • PLAYER_PO_TOKEN_POLICY required = False
+
+    This makes it the only client that consistently downloads on cloud hosts
+    without additional tooling or credentials.
+
+    FORMAT STRATEGY
+    ───────────────
+    Prefer mp4 video + m4a audio ≤720p, with a muxed mp4 fallback.  This
+    maximises compatibility with MoviePy/ffmpeg and avoids WebM/VP9 streams
+    that sometimes have DRM issues on android_vr.
+    """
+    return {
+        "format": (
+            # Primary: separate video + audio ≤720p, merged to mp4
+            "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
+            "/bestvideo[height<=720][ext=mp4]+bestaudio"
+            "/bestvideo[height<=720]+bestaudio[ext=m4a]"
+            "/bestvideo[height<=720]+bestaudio"
+            # Fallback: pre-muxed mp4 ≤720p (older / restricted videos)
+            "/best[height<=720][ext=mp4]"
+            "/best[height<=720]"
+            "/best"
+        ),
+        "outtmpl":             out_path,
+        "quiet":               True,
+        "no_warnings":         True,
+        "noplaylist":          True,
+        "merge_output_format": "mp4",
+        # ── Streamlit Cloud / server-IP options ──────────────────────────────
+        # Force the android_vr InnerTube client — the only client that does
+        # not require a GVS PO token on datacenter IPs (verified against
+        # yt-dlp 2026.03.17 INNERTUBE_CLIENTS table).
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android_vr"],
+            }
+        },
+        # android_vr User-Agent must match the client identity; YouTube CDN
+        # validates the UA against the InnerTube client name.
+        "http_headers": {
+            "User-Agent": _ANDROID_VR_UA,
+        },
+        # Streamlit Cloud routes HTTPS through a proxy with a non-standard
+        # TLS chain; nocheckcertificate prevents handshake failures.
+        "nocheckcertificate":  True,
+        # Retry generously — CDN 5xx and transient 403s are common on first hit.
+        "retries":             10,
+        "fragment_retries":    10,
+        "file_access_retries": 5,
+        "socket_timeout":      30,
+    }
+
+
 def _download_trailer(topic: str, tmdb_key: str = "") -> str | None:
     """
     Download the official trailer for a film/series at up to 720p.
@@ -561,54 +638,36 @@ def _download_trailer(topic: str, tmdb_key: str = "") -> str | None:
       1. TMDB /videos → exact YouTube video ID (most reliable, no search)
       2. yt-dlp ytsearch as fallback if TMDB lookup fails or no key given
 
-    Uses nocheckcertificate to handle Streamlit Cloud proxy SSL chain.
+    Uses the android_vr InnerTube client to avoid 403 errors on cloud IPs.
     Caches the download in /tmp so re-runs are instant.
     Returns path to .mp4 or None on failure.
     """
     try:
         import yt_dlp
-        out_path = os.path.join(
-            tempfile.gettempdir(),
-            f"trailer_{re.sub(r'[^a-z0-9]', '_', topic.lower())}.mp4"
-        )
+
+        safe_name = re.sub(r"[^a-z0-9]", "_", topic.lower())
+        out_path  = os.path.join(tempfile.gettempdir(), f"trailer_{safe_name}.mp4")
+
+        # Return cached file immediately if it already exists and is non-trivial
         if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
-            return out_path   # reuse cached download
+            return out_path
 
-        ydl_opts = {
-            "format": (
-                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
-                "/bestvideo[height<=720]+bestaudio"
-                "/best[height<=720]"
-                "/best"
-            ),
-            "outtmpl":             out_path,
-            "quiet":               True,
-            "no_warnings":         True,
-            "noplaylist":          True,
-            "merge_output_format": "mp4",
-            "nocheckcertificate":  True,
-            "http_headers": {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-            },
-        }
+        opts = _build_ydl_opts(out_path)
 
-        # Step 1 — TMDB gives us the exact YouTube ID (no YouTube search)
+        # Prefer exact YouTube ID from TMDB (avoids YouTube search entirely)
         yt_key = _tmdb_trailer_key(topic, tmdb_key)
         if yt_key:
             video_url = f"https://www.youtube.com/watch?v={yt_key}"
         else:
-            # Step 2 — fallback: yt-dlp keyword search
+            # Fallback: keyword search (less reliable on server IPs)
             video_url = f"ytsearch1:{topic} official trailer"
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([video_url])
 
         if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
             return out_path
+
     except Exception:
         pass
     return None
@@ -814,7 +873,6 @@ def _shot_prompt_film(topic, source_type, matrix, character_names,
     outline   = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(script_outline))
 
     if is_shorts:
-        # Shorts: trailer first, tight clips, no chapter/stat cards
         trailer_note = (
             'TRAILER AVAILABLE: Yes — prefer "trailer_clip" for all action/plot moments.'
             if has_trailer else
@@ -853,7 +911,6 @@ Rules:
 - DO NOT use chapter_card, stat_card, code_card, or pexels_broll for Shorts.
 """
     else:
-        # Long-form
         trailer_note = (
             'TRAILER AVAILABLE: Yes — use "trailer_clip" for high-energy action/plot moments.'
             if has_trailer else
@@ -882,7 +939,7 @@ For each segment pick ONE visual type:
   "tmdb_cast"     — headshot of a named cast member (only names from KNOWN CAST MEMBERS)
   "pexels_broll"  — cinematic B-roll SPECIFIC to this film's world:
                     queries must reference the film's setting, tone, or themes
-                    (e.g. "lone astronaut deep space dark" not "sci-fi movie")
+                    (e.g. "lone astronaut deep space silence" not "sci-fi movie")
   "text_card"     — styled card (RT score, box office, key review line)
   "stat_card"     — big-number card ("$240M opening weekend", "8.4/10 IMDb")
   "chapter_card"  — act transition card from script outline (max 3 total)
@@ -1106,7 +1163,6 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
                 vc = VideoFileClip(trailer_path).subclip(s, e)
                 # Resize/fit to canvas
                 if vc.w != cw or vc.h != ch:
-                    # Use _fit_to_canvas frame-by-frame via VideoClip
                     src_ratio = vc.w / vc.h
                     tgt_ratio = cw / ch
                     both_l = src_ratio >= 1.0 and tgt_ratio >= 1.0
@@ -1117,10 +1173,8 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
                                                    y_center=vc.h*scale/2,
                                                    width=cw, height=ch)
                     else:
-                        # letterbox/pillarbox via resize to fit
                         scale = min(cw / vc.w, ch / vc.h)
                         vc_r  = vc.resize(scale)
-                        # Build blurred bg from first frame
                         bg_arr = _fit_to_canvas(
                             Image.fromarray(vc.get_frame(0)), cw, ch)
                         bg_clip = VideoClip(lambda t, b=bg_arr: b,
@@ -1132,7 +1186,7 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
                             [bg_clip, vc_r.set_position((ox, oy))],
                             size=(cw, ch))
                 clip_credit = f"Courtesy: {topic} Official Trailer / YouTube"
-                return vc, clip_credit   # return VideoClip directly, not ndarray
+                return vc, clip_credit
             except Exception:
                 pass   # fall through to stills
 
@@ -1223,7 +1277,7 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
             arr = make_text_card(shot.get("note", topic), mode=mode, cw=cw, ch=ch)
             clip_credit = ""
 
-    return arr, clip_credit  # ndarray or VideoClip, plus attribution string
+    return arr, clip_credit
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1264,8 +1318,8 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
         trailer_idx  = [0]
         clips        = []
 
-        clip_credits  = []   # parallel list: credit string per clip
-        clip_starts   = []   # cumulative start time per clip for lookup
+        clip_credits  = []
+        clip_starts   = []
         running_time  = 0.0
 
         for i, shot in enumerate(shot_list):
@@ -1283,10 +1337,8 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
                 trailer_idx, cw, ch, is_shorts)
 
             if hasattr(visual, "duration"):
-                # It's a VideoClip (trailer segment) — use directly
                 clip = visual.set_duration(min(visual.duration, duration))
             else:
-                # It's an ndarray still — apply Ken Burns zoom
                 clip = _zoom_clip(visual, duration, zoom_in)
 
             clip_starts.append(running_time)
@@ -1309,23 +1361,18 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
             clips[-1] = filler
             video = concatenate_videoclips(clips, method="compose")
 
-        # Capture the assembled video before reassigning 'final' — this
-        # prevents the credit overlay closure from recursing into itself.
         _assembled = video.subclip(0, audio.duration).set_audio(audio)
 
         # ── Credit overlay ────────────────────────────────────────────────────
         _write_progress(91, "Adding credit overlay…")
 
         def _credit_at(t):
-            """Return the credit string active at time t in the final video."""
             if credit_override:
                 return credit_override
             idx = bisect.bisect_right(clip_starts, t) - 1
             idx = max(0, min(idx, len(clip_credits) - 1))
             return clip_credits[idx]
 
-        # _overlay_frame closes over _assembled (not 'final'), so reassigning
-        # final below does not cause infinite recursion.
         def _overlay_frame(t):
             f = _assembled.get_frame(t)
             return _add_credit_overlay(f, _credit_at(t), is_shorts, cw, ch)
@@ -1370,7 +1417,6 @@ _pexels_from_secret = bool(_secret("PEXELS_API_KEY"))
 with st.sidebar:
     st.header("🔑 API Keys")
 
-    # ── Gemini ────────────────────────────────────────────────────────────────
     if _gemini_from_secret:
         api_key = _secret("GEMINI_API_KEY")
         st.success("✓ Gemini (from Secrets)")
@@ -1383,7 +1429,6 @@ with st.sidebar:
         else:
             st.warning("⚠️ Gemini API Key required")
 
-    # ── TMDB ─────────────────────────────────────────────────────────────────
     if _tmdb_from_secret:
         tmdb_key = _secret("TMDB_API_KEY")
         st.success("✓ TMDB (from Secrets)")
@@ -1397,7 +1442,6 @@ with st.sidebar:
         else:
             st.caption("TMDB key needed for Film & Series mode")
 
-    # ── Pexels ────────────────────────────────────────────────────────────────
     if _pexels_from_secret:
         pexels_key = _secret("PEXELS_API_KEY")
         st.success("✓ Pexels (from Secrets)")
@@ -1698,10 +1742,10 @@ with tab5:
 with tab6:
     st.subheader("Step 6: Video Assembly")
 
-    mode      = st.session_state.get("mode_param", "")
-    topic_val = st.session_state.get("topic_param", "")
+    mode       = st.session_state.get("mode_param", "")
+    topic_val  = st.session_state.get("topic_param", "")
     length_val = st.session_state.get("length_param", "")
-    is_shorts = "Short" in length_val
+    is_shorts  = "Short" in length_val
 
     mode_labels = {MODE_FILM: "🎬 Film & Series",
                    MODE_TECH: "🔍 Tech / Investigative",
@@ -1710,9 +1754,7 @@ with tab6:
         shorts_badge = " — 📱 **Shorts 9:16**" if is_shorts else " — 🖥️ **Landscape 16:9**"
         st.info(f"Mode: **{mode_labels.get(mode, mode)}** — Topic: **{topic_val}**{shorts_badge}")
 
-    # API keys are resolved from sidebar (or Streamlit Secrets) — no input needed here
-
-    # Credit override (optional — auto-credits are used by default)
+    # Credit override
     override_on = st.checkbox(
         "✏️ Override automatic credits",
         value=False,
@@ -1728,7 +1770,7 @@ with tab6:
 
     st.markdown("---")
 
-    # Pre-flight
+    # Pre-flight checks
     audio_path_v  = st.session_state.get("last_audio_path", "")
     script_text_v = st.session_state.get("final_script_text", "")
 
@@ -1750,15 +1792,15 @@ with tab6:
         for m in missing:
             st.warning(m)
     else:
-        # Trailer fetch (film mode only)
         if mode == MODE_FILM:
             st.caption(
-                "ℹ️ Trailers are sourced from **YouTube** (not TMDB). "
-                "Your TMDB key is used for stills and cast photos only. "
-                "Trailer download requires the app server to reach youtube.com."
+                "ℹ️ Trailers are downloaded via **yt-dlp** using the `android_vr` InnerTube "
+                "client, which bypasses the GVS PO token requirement that causes 403 errors "
+                "on cloud/datacenter IPs. The TMDB key is used to look up the exact YouTube "
+                "video ID so no keyword search is needed."
             )
             if st.button("🎞️ Pre-fetch Trailer (optional but recommended)"):
-                with st.spinner(f"Searching YouTube for {topic_val} official trailer…"):
+                with st.spinner(f"Searching for {topic_val} official trailer…"):
                     tp = _download_trailer(topic_val, tmdb_key)
                     if tp:
                         segs = _extract_trailer_segments(tp)
@@ -1769,9 +1811,10 @@ with tab6:
                         st.session_state["trailer_path"] = None
                         st.session_state["trailer_segs"] = []
                         st.warning(
-                            "Trailer download failed. This usually means the server "
-                            "cannot reach YouTube (network restriction on some cloud "
-                            "hosts). Assembly will use TMDB stills and Pexels B-roll instead."
+                            "Trailer download failed. This can happen when the server's IP "
+                            "is blocked by YouTube's CDN even with the android_vr client. "
+                            "Assembly will use TMDB stills and Pexels B-roll instead — "
+                            "the video will still complete successfully."
                         )
 
         # Shot list
@@ -1868,4 +1911,4 @@ with tab6:
 # FOOTER
 # ─────────────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption("SudoVid v1.0 | AI-Powered Script, Voice & Video Engine")
+st.caption("SudoVid v1.1 | AI-Powered Script, Voice & Video Engine")

@@ -92,12 +92,10 @@ MODE_EDU  = "Educational Technology"
 CANVAS_LANDSCAPE = (1280, 720)   # 16:9  long-form
 CANVAS_SHORTS    = (1080, 1920)  # 9:16  Shorts
 
-FPS            = 24
-TMDB_BASE      = "https://api.themoviedb.org/3"
-TMDB_IMG       = "https://image.tmdb.org/t/p/w1280"
-PEXELS_BASE    = "https://api.pexels.com/v1/search"
-WIKI_THUMB     = "https://en.wikipedia.org/api/rest_v1/page/summary/{}"
-PROGRESS_FILE  = os.path.join(tempfile.gettempdir(), "sa_video_progress.json")
+FPS             = 24
+WIKI_THUMB      = "https://en.wikipedia.org/api/rest_v1/page/summary/{}"
+OPENVERSE_BASE  = "https://api.openverse.org/v1/images/"
+PROGRESS_FILE   = os.path.join(tempfile.gettempdir(), "sa_video_progress.json")
 
 _DARK_BG  = (10, 12, 20)
 _ACCENT   = (37,  99, 235)
@@ -105,15 +103,6 @@ _TECH_ACC = (234, 88,  12)
 _EDU_ACC  = (22, 163,  74)
 _TEXT_HI  = (240, 245, 255)
 _TEXT_LO  = (148, 163, 184)
-
-# ── android_vr User-Agent used for yt-dlp trailer downloads ──────────────────
-# Matches the android_vr innertube client identity so YouTube CDN serves the
-# correct stream URLs.  Must be updated if yt-dlp bumps the client version.
-_ANDROID_VR_UA = (
-    "com.google.android.apps.youtube.vr.oculus/1.57.29 "
-    "(Linux; Android 12; Build/SQ3A.220705.003.A1) gzip"
-)
-
 
 def _canvas(is_shorts: bool) -> tuple:
     return CANVAS_SHORTS if is_shorts else CANVAS_LANDSCAPE
@@ -427,75 +416,42 @@ def _fetch_array(url: str, cw: int, ch: int) -> np.ndarray | None:
 # EXTERNAL IMAGE SOURCES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _tmdb_lookup(topic, key):
-    try:
-        r = requests.get(f"{TMDB_BASE}/search/multi",
-                         params={"api_key": key, "query": topic},
-                         timeout=10).json()
-        hits = r.get("results", [])
-        if hits:
-            return hits[0]["id"], hits[0].get("media_type", "movie")
-    except Exception:
-        pass
-    return None, None
-
-
-def _tmdb_images(media_id, media_type, key):
+def _openverse_image(query: str, page: int = 1) -> str | None:
     """
-    Fetch TMDB backdrops (landscape-first) and posters.
-    Backdrops are sorted by aspect ratio so landscape images
-    come first — portrait backdrops are pushed to the end.
+    Fetch a CC-licensed image from OpenVerse (WordPress Foundation).
+
+    OpenVerse aggregates Flickr CC, Wikimedia Commons, and other open
+    repositories. No API key required. Returns a direct image URL or None.
+    All results are commercially usable CC or public-domain images.
     """
-    try:
-        r = requests.get(f"{TMDB_BASE}/{media_type}/{media_id}/images",
-                         params={"api_key": key}, timeout=10).json()
-        # Sort backdrops: prefer ones with landscape aspect ratio
-        raw_backdrops = r.get("backdrops", [])
-        raw_backdrops.sort(
-            key=lambda x: -(x.get("width", 1) / max(x.get("height", 1), 1)))
-        backdrops = [TMDB_IMG + x["file_path"] for x in raw_backdrops[:15]]
-        posters   = [TMDB_IMG + x["file_path"] for x in r.get("posters", [])[:3]]
-        return {"backdrops": backdrops, "posters": posters}
-    except Exception:
-        return {"backdrops": [], "posters": []}
-
-
-def _tmdb_cast_photo(name, key):
-    try:
-        r = requests.get(f"{TMDB_BASE}/search/person",
-                         params={"api_key": key, "query": name},
-                         timeout=10).json()
-        hits = r.get("results", [])
-        if hits and hits[0].get("profile_path"):
-            return TMDB_IMG + hits[0]["profile_path"]
-    except Exception:
-        pass
-    return None
-
-
-def _pexels_image(query, key, page=1, orientation="landscape"):
-    """Fetch a Pexels image. orientation: 'landscape' for long-form, 'portrait' for Shorts."""
     try:
         r = requests.get(
-            PEXELS_BASE,
-            headers={"Authorization": key},
-            params={"query": query, "per_page": 5,
-                    "page": page, "orientation": orientation},
-            timeout=10,
+            OPENVERSE_BASE,
+            params={
+                "q":             query,
+                "license_type":  "commercial",   # CC0, CC BY, CC BY-SA only
+                "page_size":     5,
+                "page":          page,
+            },
+            headers={"User-Agent": "SudoVid/1.0"},
+            timeout=12,
         ).json()
-        photos = r.get("photos", [])
-        if photos:
-            return photos[0]["src"]["large2x"]
+        results = r.get("results", [])
+        if results:
+            return results[0].get("url")
     except Exception:
         pass
     return None
 
 
-def _wiki_image(query):
+def _wiki_image(query: str) -> str | None:
     """
-    Fetch Wikipedia thumbnail with validation:
-    - Must resolve to a real image URL
-    - Must be at least 200×200 (filters out tiny icons)
+    Fetch a Wikipedia article thumbnail.
+
+    Uses the Wikipedia REST summary API which returns the article's lead
+    image (poster for films, headshot for people, logo for companies,
+    diagram for concepts). No key required. Min 200×200 validation
+    filters out stub icons and tiny placeholders.
     """
     try:
         slug = query.strip().replace(" ", "_")
@@ -511,218 +467,427 @@ def _wiki_image(query):
     return None
 
 
+def _wiki_image_multi(queries: list[str]) -> str | None:
+    """
+    Try multiple Wikipedia queries in order, return the first hit.
+    Useful for finding images when the exact article name is uncertain.
+    """
+    for q in queries:
+        url = _wiki_image(q)
+        if url:
+            return url
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TRAILER DOWNLOAD & SEGMENTATION  (Film mode, yt-dlp)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _tmdb_trailer_key(topic: str, tmdb_key: str) -> str | None:
+def _hd_trailers_slug(title: str) -> str:
     """
-    Ask TMDB for the official trailer YouTube video ID.
-    Uses TMDB /search/multi → /movie|tv/{id}/videos.
-    Returns a YouTube video ID (11 chars) or None.
-    This avoids YouTube search entirely — TMDB knows the exact video ID.
+    Convert a film/series title to the slug format used by hd-trailers.net.
+    E.g. 'Dune: Part Two' -> 'dune-part-two'
     """
-    if not tmdb_key:
-        return None
+    slug = title.lower().strip()
+    slug = re.sub(r"[':!?,\.]", "", slug)
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
+    slug = re.sub(r"\s+", "-", slug)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug
+
+
+def _parse_hd_trailers_page(html: str) -> str | None:
+    """
+    Parse an hd-trailers.net movie page and return the best Apple CDN
+    trailer URL (720p preferred, 480p fallback).
+
+    hd-trailers.net is an index site — the actual video files are served
+    directly from Apple's movietrailers.apple.com CDN with no auth or
+    bot-detection. This function extracts those direct URLs from the page.
+    """
     try:
-        # Step 1: find the media ID
-        r = requests.get(
-            f"{TMDB_BASE}/search/multi",
-            params={"api_key": tmdb_key, "query": topic},
-            timeout=10,
-        ).json()
-        hits = r.get("results", [])
-        if not hits:
-            return None
-        media_id   = hits[0]["id"]
-        media_type = hits[0].get("media_type", "movie")
-        if media_type not in ("movie", "tv"):
-            media_type = "movie"
+        from bs4 import BeautifulSoup
+        import json as _json
 
-        # Step 2: fetch video list
-        rv = requests.get(
-            f"{TMDB_BASE}/{media_type}/{media_id}/videos",
-            params={"api_key": tmdb_key},
-            timeout=10,
-        ).json()
+        soup = BeautifulSoup(html, "html.parser")
 
-        # Step 3: pick best YouTube trailer
-        results = rv.get("results", [])
-        for type_pref in ("Trailer", "Teaser"):
-            for v in results:
-                if v.get("site") == "YouTube" and v.get("type") == type_pref:
-                    return v["key"]
-        # Any YouTube video as last resort
-        for v in results:
-            if v.get("site") == "YouTube":
-                return v["key"]
+        # Strategy 1: JSON-LD structured data (most reliable, always present)
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = _json.loads(script.string or "")
+                url  = (data.get("trailer") or {}).get("contentUrl", "")
+                if url and "movietrailers.apple.com" in url:
+                    return re.sub(r"h(1080|480)p", "h720p", url)
+            except Exception:
+                pass
+
+        # Strategy 2: quality-tagged table cells (720p → 1080p → 480p)
+        for quality in ("trailer-quality-720", "trailer-quality-1080",
+                        "trailer-quality-480"):
+            for td in soup.find_all("td", class_=quality):
+                a = td.find("a", href=re.compile(r"movietrailers\.apple\.com"))
+                if a:
+                    return a["href"]
+
+        # Strategy 3: any Apple CDN 720p link anywhere on the page
+        for a in soup.find_all(
+                "a", href=re.compile(r"movietrailers\.apple\.com.*h720p")):
+            return a["href"]
+
     except Exception:
         pass
     return None
 
 
-def _validate_cookies_txt(content: str) -> tuple[bool, str]:
+def _download_apple_cdn(apple_url: str, out_path: str) -> bool:
     """
-    Validate a Netscape-format cookies.txt file for YouTube cookies.
-
-    Returns (is_valid, message).
-    The file must contain at least one cookie for youtube.com or google.com.
-    Having session auth cookies (__Secure-3PSID, SAPISID, etc.) is what
-    actually bypasses YouTube's bot-detection on cloud IPs.
-    """
-    if not content.strip():
-        return False, "File is empty."
-
-    youtube_cookies: list[str] = []
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split("\t")
-        if len(parts) >= 7:
-            domain = parts[0]
-            name   = parts[5]
-            if "youtube.com" in domain or "google.com" in domain:
-                youtube_cookies.append(name)
-
-    if not youtube_cookies:
-        return False, (
-            "No YouTube cookies found in this file. "
-            "Make sure you exported cookies while on youtube.com."
-        )
-
-    important = {"VISITOR_INFO1_LIVE", "YSC", "__Secure-3PSID", "HSID", "SAPISID"}
-    found_important = important & set(youtube_cookies)
-
-    if not found_important:
-        return True, (
-            f"Found {len(youtube_cookies)} YouTube cookie(s), but no session-auth cookies "
-            f"({', '.join(sorted(important))}). Download may still fail on cloud IPs."
-        )
-
-    return True, (
-        f"✓ {len(youtube_cookies)} YouTube cookie(s) including "
-        f"{len(found_important)} auth cookie(s). Ready to download."
-    )
-
-
-def _build_ydl_opts(out_path: str, cookie_path: str | None = None) -> dict:
-    """
-    Build yt-dlp options for Streamlit Cloud (server / datacenter IP).
-
-    TWO MODES depending on whether the user supplied a cookies.txt file:
-
-    WITH cookies (cookie_path provided)
-    ────────────────────────────────────
-    Uses the 'web' InnerTube client with the user's real browser session
-    cookies.  YouTube treats the request as coming from a logged-in browser,
-    bypassing bot-detection entirely regardless of the server's IP address.
-    This is the only 100% reliable approach from cloud IPs and is the method
-    explicitly recommended in the yt-dlp documentation for server deployments.
-
-    WITHOUT cookies (cookie_path is None)
-    ──────────────────────────────────────
-    Falls back to the 'android_vr' client.  This client does not require a
-    JS player, auth, or GVS PO tokens, so it works on some cloud IPs.
-    However, YouTube increasingly blocks entire AWS/GCP IP ranges at the
-    InnerTube API level, so this path may still produce 403 errors.
-
-    FORMAT STRATEGY
-    ───────────────
-    Prefer mp4 video + m4a audio ≤720p, with a muxed mp4 fallback.
-    """
-    if cookie_path:
-        # ── Authenticated path: real browser session cookies ─────────────────
-        # 'web' client + valid cookies → YouTube sees a real logged-in browser.
-        # This bypasses IP-based bot-detection completely.
-        client  = "web"
-        ua      = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        )
-        extra = {"cookiefile": cookie_path}
-    else:
-        # ── Unauthenticated path: android_vr (no PO token required) ──────────
-        # Best effort without credentials; may fail on heavily blocked IPs.
-        client  = "android_vr"
-        ua      = _ANDROID_VR_UA
-        extra   = {}
-
-    opts: dict = {
-        "format": (
-            "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
-            "/bestvideo[height<=720][ext=mp4]+bestaudio"
-            "/bestvideo[height<=720]+bestaudio[ext=m4a]"
-            "/bestvideo[height<=720]+bestaudio"
-            "/best[height<=720][ext=mp4]"
-            "/best[height<=720]"
-            "/best"
-        ),
-        "outtmpl":             out_path,
-        "quiet":               True,
-        "no_warnings":         True,
-        "noplaylist":          True,
-        "merge_output_format": "mp4",
-        "extractor_args":      {"youtube": {"player_client": [client]}},
-        "http_headers":        {"User-Agent": ua},
-        # Streamlit Cloud's HTTPS proxy has a non-standard TLS chain.
-        "nocheckcertificate":  True,
-        # Retry generously — transient 5xx from YouTube CDN is common.
-        "retries":             10,
-        "fragment_retries":    10,
-        "file_access_retries": 5,
-        "socket_timeout":      30,
-    }
-    opts.update(extra)
-    return opts
-
-
-def _download_trailer(topic: str,
-                      tmdb_key: str = "",
-                      cookie_path: str | None = None) -> str | None:
-    """
-    Download the official trailer for a film/series at up to 720p.
-
-    Strategy (in order):
-      1. TMDB /videos → exact YouTube video ID (avoids keyword search)
-      2. yt-dlp ytsearch as fallback if TMDB lookup fails or no key given
-
-    When cookie_path is provided the 'web' client is used with real browser
-    session cookies, which bypasses YouTube's cloud-IP bot-detection.
-    Without cookies the 'android_vr' client is used as a best-effort fallback.
-
-    Caches downloads in /tmp. Returns path to .mp4 or None on failure.
+    Stream-download a direct Apple CDN .mov file to out_path.
+    Apple's CDN is unauthenticated, accepts Range requests, and is
+    reliable from any IP including cloud/datacenter ranges.
+    Returns True on success.
     """
     try:
-        import yt_dlp
+        hdrs = {
+            # QuickTime UA avoids the rare browser-check redirect Apple uses
+            "User-Agent": "QuickTime/7.7.3 (qtver=7.7.3;os=Windows NT 6.1)",
+        }
+        with requests.get(apple_url, headers=hdrs,
+                          stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(out_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 19):  # 512 KB
+                    f.write(chunk)
+        return os.path.exists(out_path) and os.path.getsize(out_path) > 100_000
+    except Exception:
+        return False
 
-        safe_name = re.sub(r"[^a-z0-9]", "_", topic.lower())
-        # Separate cache files for cookie vs no-cookie runs so a failed
-        # no-cookie attempt doesn't block a later cookie-based retry.
-        suffix   = "_auth" if cookie_path else ""
-        out_path = os.path.join(
-            tempfile.gettempdir(), f"trailer_{safe_name}{suffix}.mp4")
 
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
-            return out_path
+def _apple_trailers_xml(topic: str) -> str | None:
+    """
+    Fallback 2: search Apple's own XML feed for a trailer URL.
 
-        opts = _build_ydl_opts(out_path, cookie_path=cookie_path)
+    trailers.apple.com/trailers/home/xml/current.xml lists all trailers
+    Apple is currently promoting (~18 months of releases). It uses the same
+    Apple CDN as hd-trailers.net but is searchable by title directly —
+    useful for films that hd-trailers.net hasn't indexed yet (very new
+    releases) or where the slug guess didn't match.
 
-        yt_key = _tmdb_trailer_key(topic, tmdb_key)
-        if yt_key:
-            video_url = f"https://www.youtube.com/watch?v={yt_key}"
-        else:
-            video_url = f"ytsearch1:{topic} official trailer"
+    The XML is ~500 KB; we cache it in a module-level dict for the process
+    lifetime so multiple lookup calls don't re-download it.
+    """
+    import difflib
+    import xml.etree.ElementTree as ET
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([video_url])
+    XML_URL = "https://trailers.apple.com/trailers/home/xml/current.xml"
 
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
-            return out_path
+    # Module-level cache: {url: xml_text}
+    cache = _apple_trailers_xml.__dict__.setdefault("_cache", {})
+    xml_text = cache.get(XML_URL)
+
+    if not xml_text:
+        try:
+            r = requests.get(
+                XML_URL,
+                headers={"User-Agent": "QuickTime/7.7.3"},
+                timeout=20,
+            )
+            r.raise_for_status()
+            xml_text = r.text
+            cache[XML_URL] = xml_text
+        except Exception:
+            return None
+
+    try:
+        root       = ET.fromstring(xml_text)
+        topic_low  = topic.lower()
+        best_url   = None
+        best_score = 0.0
+
+        for movie in root.findall("movieinfo"):
+            title_el = movie.find("./info/title")
+            if title_el is None or not title_el.text:
+                continue
+
+            score = difflib.SequenceMatcher(
+                None, topic_low, title_el.text.lower()).ratio()
+            if score < 0.60:
+                continue
+
+            for quality in ("hd720p", "hd1080p", "hd480p"):
+                src_el = movie.find(f'.//videosize[@type="{quality}"]/src')
+                if src_el is not None and src_el.text and \
+                        "movietrailers.apple.com" in src_el.text:
+                    if score > best_score:
+                        best_score = score
+                        best_url   = src_el.text
+                    break  # found best quality for this title
+
+    except Exception:
+        return None
+
+    return best_url
+
+
+def _internet_archive_trailer(topic: str) -> str | None:
+    """
+    Fallback 3: search Internet Archive for an official trailer.
+
+    Studios and film preservationists legally deposit trailers on
+    archive.org. It covers classic films, limited-release titles, and
+    anything pre-2006 that neither hd-trailers.net nor Apple's feed holds.
+    Direct download URLs require no auth and work from any IP.
+    """
+    try:
+        r = requests.get(
+            "https://archive.org/advancedsearch.php",
+            params={
+                "q": (
+                    f'title:("{topic}") AND '
+                    '(subject:"trailer" OR subject:"movie trailer") AND '
+                    "mediatype:movies"
+                ),
+                "fl[]": ["identifier", "title"],
+                "rows":  5,
+                "output": "json",
+            },
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        docs = r.json().get("response", {}).get("docs", [])
+        if not docs:
+            return None
+
+        for doc in docs:
+            identifier = doc.get("identifier", "")
+            if not identifier:
+                continue
+            meta = requests.get(
+                f"https://archive.org/metadata/{identifier}",
+                timeout=10,
+            ).json()
+            files = meta.get("files", [])
+            # Prefer files with 'trailer' in the name, then any mp4/mov
+            for name_filter, exts in (
+                (lambda n: "trailer" in n, ("mp4", "mov")),
+                (lambda n: True,           ("mp4",)),
+            ):
+                for ext in exts:
+                    for f in files:
+                        fname = f.get("name", "")
+                        if fname.lower().endswith(f".{ext}") and \
+                                name_filter(fname.lower()):
+                            return (
+                                f"https://archive.org/download/"
+                                f"{identifier}/{fname}"
+                            )
+    except Exception:
+        pass
+    return None
+
+
+def _imdb_trailer_url(topic: str) -> str | None:
+    """
+    Find an IMDb trailer video page URL (https://www.imdb.com/video/vi{id})
+    for a given film or series title. No API key required.
+
+    Why IMDb works perfectly from Streamlit Cloud:
+      IMDb video files are served from *.media-imdb.com (Amazon CloudFront)
+      — the same AWS infrastructure Streamlit Cloud runs on. No IP-based
+      blocking, no bot detection, no auth required for public trailers.
+
+    Lookup chain:
+      1. IMDb suggest API  → tt-ID  (fast, key-free, official IMDb endpoint)
+      2. IMDb find page    → tt-ID  (fallback, standard web page)
+      3. IMDb videogallery → vi-ID  (parse __NEXT_DATA__ JSON)
+      4. Return imdb.com/video/vi{id} for yt-dlp's IMDb extractor.
+    """
+    tt_id: str | None = None
+
+    # Step 1a: IMDb suggest API (official, key-free)
+    try:
+        slug = re.sub(r"[^a-z0-9 ]", "", topic.lower()).strip()
+        r = requests.get(
+            f"https://v3.sg.media-imdb.com/suggestion/x/{slug}.json",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        ).json()
+        for item in r.get("d", []):
+            if item.get("qid") in ("movie", "tvSeries", "tvMiniSeries"):
+                tt_id = item.get("id")
+                break
+    except Exception:
+        pass
+
+    # Step 1b: IMDb find page (standard web page, no IP blocking)
+    if not tt_id:
+        try:
+            r = requests.get(
+                "https://www.imdb.com/find/",
+                params={"q": topic, "s": "tt", "ttype": "ft"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                timeout=12,
+            )
+            r.raise_for_status()
+            m = re.search(
+                r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
+                r.text, re.DOTALL)
+            if m:
+                data    = json.loads(m.group(1))
+                results = (data.get("props", {})
+                               .get("pageProps", {})
+                               .get("titleResults", {})
+                               .get("results", []))
+                if results:
+                    tt_id = results[0].get("id")
+        except Exception:
+            pass
+
+    if not tt_id:
+        return None
+
+    # Step 2: tt-ID → vi-ID from the videogallery page __NEXT_DATA__
+    try:
+        r = requests.get(
+            f"https://www.imdb.com/title/{tt_id}/videogallery/",
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+
+        m = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
+            r.text, re.DOTALL)
+        if not m:
+            return None
+
+        data  = json.loads(m.group(1))
+        edges = (data.get("props", {})
+                     .get("pageProps", {})
+                     .get("contentData", {})
+                     .get("entityMetadata", {})
+                     .get("primaryVideos", {})
+                     .get("edges", []))
+
+        vi_id: str | None = None
+        for edge in edges:
+            node     = edge.get("node", {})
+            vid_id   = node.get("id", "")
+            vid_name = (node.get("name") or {}).get("value", "").lower()
+            if vid_id.startswith("vi"):
+                if not vi_id:
+                    vi_id = vid_id          # first video as fallback
+                if "trailer" in vid_name:
+                    vi_id = vid_id          # prefer trailer-labelled
+                    break
+
+        if vi_id:
+            return f"https://www.imdb.com/video/{vi_id}"
 
     except Exception:
         pass
+    return None
+
+
+def _download_imdb_trailer(imdb_video_url: str, out_path: str) -> bool:
+    """
+    Download a trailer from an IMDb video page using yt-dlp's IMDb extractor.
+    Videos are served from *.media-imdb.com (Amazon CloudFront) — no auth,
+    no bot detection, works from any IP including Streamlit Cloud's AWS range.
+    Returns True on success.
+    """
+    try:
+        import yt_dlp
+        opts = {
+            "format": "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]",
+            "outtmpl":             out_path,
+            "quiet":               True,
+            "no_warnings":         True,
+            "merge_output_format": "mp4",
+            "retries":             5,
+            "socket_timeout":      30,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([imdb_video_url])
+        return os.path.exists(out_path) and os.path.getsize(out_path) > 100_000
+    except Exception:
+        return False
+
+
+def _download_trailer(topic: str) -> str | None:
+    """
+    Download the official trailer for a film/series at up to 720p.
+
+    Four-source fallback chain — all sources are auth-free, key-free,
+    and work from any server IP including Streamlit Cloud's AWS ranges:
+
+      1. hd-trailers.net → Apple CDN          (2006-present, fast)
+      2. Apple Trailers XML feed → Apple CDN  (~18 months, fuzzy match)
+      3. IMDb → Amazon CloudFront CDN         (near-universal, key-free)
+      4. Internet Archive → direct MP4        (classics, pre-2006, niche)
+      5. None → TMDB stills + Pexels B-roll   (caller's guaranteed fallback)
+
+    Caches in /tmp. Returns path to .mov/.mp4 or None.
+    """
+    safe_name = re.sub(r"[^a-z0-9]", "_", topic.lower())
+    out_path  = os.path.join(tempfile.gettempdir(), f"trailer_{safe_name}.mov")
+
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
+        return out_path
+
+    # ── Source 1: hd-trailers.net ─────────────────────────────────────────────
+    try:
+        slug = _hd_trailers_slug(topic)
+        r    = requests.get(
+            f"https://www.hd-trailers.net/movie/{slug}/",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SudoVid/1.0)"},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            apple_url = _parse_hd_trailers_page(r.text)
+            if apple_url and _download_apple_cdn(apple_url, out_path):
+                return out_path
+    except Exception:
+        pass
+
+    # ── Source 2: Apple Trailers XML feed ────────────────────────────────────
+    try:
+        apple_url = _apple_trailers_xml(topic)
+        if apple_url and _download_apple_cdn(apple_url, out_path):
+            return out_path
+    except Exception:
+        pass
+
+    # ── Source 3: IMDb → Amazon CloudFront CDN ───────────────────────────────
+    try:
+        imdb_url = _imdb_trailer_url(topic)
+        if imdb_url:
+            out_path_mp4 = out_path.replace(".mov", ".mp4")
+            if _download_imdb_trailer(imdb_url, out_path_mp4):
+                return out_path_mp4
+    except Exception:
+        pass
+
+    # ── Source 4: Internet Archive ───────────────────────────────────────────
+    try:
+        archive_url = _internet_archive_trailer(topic)
+        if archive_url:
+            out_path_mp4 = out_path.replace(".mov", "_archive.mp4")
+            if _download_apple_cdn(archive_url, out_path_mp4):
+                return out_path_mp4
+    except Exception:
+        pass
+
     return None
 
 
@@ -1181,7 +1346,7 @@ def generate_shot_list(api_key: str, has_trailer: bool, is_shorts: bool) -> list
 # CLIP RESOLVER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
+def _resolve_clip(shot, mode,
                   used_urls: set, topic,
                   trailer_path: str | None, trailer_segs: list,
                   trailer_idx: list,
@@ -1189,16 +1354,20 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
                   is_shorts: bool):
     """
     Resolve one shot dict to (visual, credit_str).
-    visual  → ndarray (still) or VideoFileClip (trailer segment)
+    visual     → ndarray (still) or VideoFileClip (trailer segment)
     credit_str → attribution string for this clip, or "" for generated cards
+
+    All image sources are key-free and CC/public-domain licensed:
+      trailer_clip  → Apple/IMDb CDN (official trailer)
+      wiki_image    → Wikipedia (posters, cast, logos, diagrams)
+      openverse     → OpenVerse CC pool (B-roll, atmospherics)
+      *_card        → generated locally (no external source)
     """
-    stype = shot.get("type", "text_card")
-    arr   = None
+    stype       = shot.get("type", "text_card")
+    arr         = None
     clip_credit = ""
-    pexels_orientation = "portrait" if is_shorts else "landscape"
 
     def _fetch_unique(url):
-        """Fetch and mark used; skip if already used."""
         if not url or url in used_urls:
             return None
         a = _fetch_array(url, cw, ch)
@@ -1214,7 +1383,6 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
             trailer_idx[0] += 1
             try:
                 vc = VideoFileClip(trailer_path).subclip(s, e)
-                # Resize/fit to canvas
                 if vc.w != cw or vc.h != ch:
                     src_ratio = vc.w / vc.h
                     tgt_ratio = cw / ch
@@ -1238,52 +1406,44 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
                         vc = CompositeVideoClip(
                             [bg_clip, vc_r.set_position((ox, oy))],
                             size=(cw, ch))
-                clip_credit = f"Courtesy: {topic} Official Trailer / YouTube"
+                clip_credit = f"Courtesy: {topic} Official Trailer"
                 return vc, clip_credit
             except Exception:
-                pass   # fall through to stills
+                pass  # fall through to stills
 
-    # ── TMDB ─────────────────────────────────────────────────────────────────
-    elif stype == "tmdb_poster":
-        for url in tmdb_cache.get("posters", []):
-            arr = _fetch_unique(url)
-            if arr is not None:
-                clip_credit = "Images courtesy: TMDB (themoviedb.org)"
-                break
+    # ── WIKI IMAGE (poster, cast, backdrop, logo, diagram) ───────────────────
+    # Handles: tmdb_poster, tmdb_backdrop, tmdb_cast, wiki_image
+    # All resolved through Wikipedia's REST API — key-free, CC/public-domain.
+    elif stype in ("wiki_image", "tmdb_poster", "tmdb_backdrop", "tmdb_cast"):
+        # Build a prioritised list of queries depending on shot type
+        if stype == "tmdb_poster":
+            queries = [topic, f"{topic} film", f"{topic} poster"]
+        elif stype == "tmdb_backdrop":
+            queries = [f"{topic} film", topic, f"{topic} movie scene"]
+        elif stype == "tmdb_cast":
+            name    = shot.get("cast_name", "")
+            queries = [name, f"{name} actor"] if name else [topic]
+        else:
+            queries = [shot.get("wiki_title", topic), topic]
 
-    elif stype == "tmdb_backdrop":
-        for url in tmdb_cache.get("backdrops", []):
-            arr = _fetch_unique(url)
-            if arr is not None:
-                clip_credit = "Images courtesy: TMDB (themoviedb.org)"
-                break
-
-    elif stype == "tmdb_cast":
-        name = shot.get("cast_name", "")
-        if name and tmdb_key:
-            url = _tmdb_cast_photo(name, tmdb_key)
-            arr = _fetch_unique(url)
-            if arr is not None:
-                clip_credit = "Images courtesy: TMDB (themoviedb.org)"
-
-    # ── PEXELS ───────────────────────────────────────────────────────────────
-    elif stype == "pexels_broll":
-        query = shot.get("pexels_query", "cinematic abstract")
-        if pexels_key:
-            for page in range(1, 4):
-                url = _pexels_image(query, pexels_key, page=page,
-                                    orientation=pexels_orientation)
-                arr = _fetch_unique(url)
-                if arr is not None:
-                    clip_credit = "Images courtesy: Pexels (pexels.com)"
-                    break
-
-    # ── WIKI ─────────────────────────────────────────────────────────────────
-    elif stype == "wiki_image":
-        url = _wiki_image(shot.get("wiki_title", topic))
+        url = _wiki_image_multi(queries)
         arr = _fetch_unique(url)
         if arr is not None:
-            clip_credit = "Images courtesy: Wikipedia (wikipedia.org)"
+            clip_credit = "Images courtesy: Wikipedia / Wikimedia Commons"
+
+    # ── OPENVERSE B-ROLL (replaces pexels_broll) ─────────────────────────────
+    # CC-licensed images from OpenVerse — no key required.
+    elif stype in ("pexels_broll", "openverse_image"):
+        query = (shot.get("pexels_query")
+                 or shot.get("image_query")
+                 or shot.get("wiki_title")
+                 or topic)
+        for page in range(1, 4):
+            url = _openverse_image(query, page=page)
+            arr = _fetch_unique(url)
+            if arr is not None:
+                clip_credit = "Images courtesy: OpenVerse (CC licensed)"
+                break
 
     # ── GENERATED CARDS ──────────────────────────────────────────────────────
     elif stype == "text_card":
@@ -1309,23 +1469,18 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
 
     # ── FALLBACK CHAIN ───────────────────────────────────────────────────────
     if arr is None:
-        # 1. Try a fresh Pexels search on the topic
-        if pexels_key:
-            url = _pexels_image(topic + " cinematic", pexels_key,
-                                orientation=pexels_orientation)
+        # 1. OpenVerse search on the topic
+        url = _openverse_image(topic + " cinematic")
+        arr = _fetch_unique(url)
+        if arr is not None:
+            clip_credit = "Images courtesy: OpenVerse (CC licensed)"
+        # 2. Wikipedia image on the topic
+        if arr is None:
+            url = _wiki_image(topic)
             arr = _fetch_unique(url)
             if arr is not None:
-                clip_credit = "Images courtesy: Pexels (pexels.com)"
-        # 2. Try any unused TMDB backdrop
-        if arr is None:
-            for url in tmdb_cache.get("backdrops", []):
-                if url not in used_urls:
-                    arr = _fetch_array(url, cw, ch)
-                    if arr is not None:
-                        used_urls.add(url)
-                        clip_credit = "Images courtesy: TMDB (themoviedb.org)"
-                        break
-        # 3. Text card — no credit needed, it is original generated content
+                clip_credit = "Images courtesy: Wikipedia / Wikimedia Commons"
+        # 3. Generated text card (always succeeds)
         if arr is None:
             arr = make_text_card(shot.get("note", topic), mode=mode, cw=cw, ch=ch)
             clip_credit = ""
@@ -1338,8 +1493,7 @@ def _resolve_clip(shot, mode, tmdb_cache, tmdb_key, pexels_key,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _assembly_worker(audio_path, shot_list, mode, topic,
-                     tmdb_key, pexels_key, output_path,
-                     is_shorts, credit_override, cookie_path=None):
+                     output_path, is_shorts, credit_override):
     try:
         cw, ch = _canvas(is_shorts)
 
@@ -1348,8 +1502,7 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
         trailer_segs = []
         if mode == MODE_FILM:
             _write_progress(2, "Searching for official trailer…")
-            trailer_path = _download_trailer(topic, tmdb_key,
-                                             cookie_path=cookie_path)
+            trailer_path = _download_trailer(topic)
             if trailer_path:
                 n_segs = 4 if is_shorts else 8
                 trailer_segs = _extract_trailer_segments(
@@ -1357,14 +1510,6 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
                 _write_progress(6, f"Trailer ready — {len(trailer_segs)} segments")
             else:
                 _write_progress(6, "Trailer not found — using stills only")
-
-        # ── TMDB pre-fetch ────────────────────────────────────────────────────
-        tmdb_cache = {"backdrops": [], "posters": []}
-        if mode == MODE_FILM and tmdb_key:
-            _write_progress(8, "Looking up film on TMDB…")
-            mid, mtype = _tmdb_lookup(topic, tmdb_key)
-            if mid:
-                tmdb_cache = _tmdb_images(mid, mtype or "movie", tmdb_key)
 
         # ── Build clips ───────────────────────────────────────────────────────
         total        = len(shot_list)
@@ -1386,7 +1531,7 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
             zoom_in  = (i % 2 == 0)
 
             visual, auto_credit = _resolve_clip(
-                shot, mode, tmdb_cache, tmdb_key, pexels_key,
+                shot, mode,
                 used_urls, topic, trailer_path, trailer_segs,
                 trailer_idx, cw, ch, is_shorts)
 
@@ -1465,11 +1610,9 @@ def _secret(key: str) -> str:
         return ""
 
 _gemini_from_secret = bool(_secret("GEMINI_API_KEY"))
-_tmdb_from_secret   = bool(_secret("TMDB_API_KEY"))
-_pexels_from_secret = bool(_secret("PEXELS_API_KEY"))
 
 with st.sidebar:
-    st.header("🔑 API Keys")
+    st.header("🔑 API Key")
 
     if _gemini_from_secret:
         api_key = _secret("GEMINI_API_KEY")
@@ -1482,32 +1625,6 @@ with st.sidebar:
             st.success("✓ Gemini API Key set")
         else:
             st.warning("⚠️ Gemini API Key required")
-
-    if _tmdb_from_secret:
-        tmdb_key = _secret("TMDB_API_KEY")
-        st.success("✓ TMDB (from Secrets)")
-    else:
-        tmdb_key = st.text_input(
-            "TMDB API Key", type="password",
-            help="Required for Film & Series stills and cast photos. "
-                 "Free at themoviedb.org/settings/api — or add TMDB_API_KEY to Secrets")
-        if tmdb_key:
-            st.success("✓ TMDB API Key set")
-        else:
-            st.caption("TMDB key needed for Film & Series mode")
-
-    if _pexels_from_secret:
-        pexels_key = _secret("PEXELS_API_KEY")
-        st.success("✓ Pexels (from Secrets)")
-    else:
-        pexels_key = st.text_input(
-            "Pexels API Key", type="password",
-            help="Required for all modes. Free at pexels.com/api — "
-                 "or add PEXELS_API_KEY to Secrets")
-        if pexels_key:
-            st.success("✓ Pexels API Key set")
-        else:
-            st.warning("⚠️ Pexels API Key required")
 
     st.divider()
     if st.button("Reset All Steps"):
@@ -1812,7 +1929,7 @@ with tab6:
     override_on = st.checkbox(
         "✏️ Override automatic credits",
         value=False,
-        help="By default credits are set automatically per clip source (TMDB, Pexels, trailer, Wikipedia). Enable this to write your own single credit line for the whole video.")
+        help="By default credits are set automatically per clip source (trailer, Wikipedia, OpenVerse). Enable this to write your own single credit line for the whole video.")
     credit_override = ""
     if override_on:
         credit_override = st.text_input(
@@ -1820,98 +1937,7 @@ with tab6:
             value=f"Courtesy: {topic_val}" if topic_val else "Courtesy: Studio Name",
             help="Shorts: top centre white pill. Long format: bottom left small white text.")
     else:
-        st.caption("🤖 Credits will be set automatically per clip — TMDB, Pexels, trailer, or Wikipedia as appropriate.")
-
-    st.markdown("---")
-
-    # ── YouTube cookies resolution (Film mode only) ───────────────────────────
-    # YouTube blocks cloud/datacenter IPs at the HTTP level.  Session cookies
-    # from a real browser login are the only reliable bypass.
-    #
-    # Priority order:
-    #   1. YOUTUBE_COOKIES_TXT in Streamlit Secrets  — operator-supplied, zero
-    #      friction for users (they never see the uploader at all).
-    #   2. cookies.txt file uploaded by the user in the UI  — fallback when no
-    #      Secret is configured.
-    #   3. No cookies  — android_vr client last resort, may still 403.
-    cookie_path: str | None = None
-
-    if mode == MODE_FILM:
-        # ── Priority 1: operator secret ───────────────────────────────────────
-        _secret_cookies = _secret("YOUTUBE_COOKIES_TXT")
-        if _secret_cookies:
-            _valid, _msg = _validate_cookies_txt(_secret_cookies)
-            if _valid:
-                # Write once per process; reuse across reruns via session state
-                if "cookie_path" not in st.session_state:
-                    _cf = tempfile.NamedTemporaryFile(
-                        mode="w", suffix=".txt", delete=False, encoding="utf-8")
-                    _cf.write(_secret_cookies)
-                    _cf.close()
-                    st.session_state["cookie_path"] = _cf.name
-                cookie_path = st.session_state["cookie_path"]
-                # Validate the tempfile still exists (container restart clears /tmp)
-                if not os.path.exists(cookie_path):
-                    _cf = tempfile.NamedTemporaryFile(
-                        mode="w", suffix=".txt", delete=False, encoding="utf-8")
-                    _cf.write(_secret_cookies)
-                    _cf.close()
-                    cookie_path = _cf.name
-                    st.session_state["cookie_path"] = cookie_path
-                st.caption("🍪 YouTube cookies loaded from Streamlit Secrets — trailer download ready.")
-            else:
-                st.warning(f"YOUTUBE_COOKIES_TXT secret found but invalid: {_msg}")
-
-        # ── Priority 2: user upload (shown only when no valid Secret exists) ──
-        if not cookie_path:
-            with st.expander("🍪 YouTube Cookies (required for trailer download)", expanded=True):
-                st.markdown(
-                    "YouTube blocks downloads from cloud server IPs. "
-                    "Uploading your browser's **cookies.txt** lets yt-dlp authenticate "
-                    "as your real session and bypasses the block.\n\n"
-                    "**How to export cookies.txt in 3 steps:**\n"
-                    "1. Install **[Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)** "
-                    "in Chrome (or *cookies.txt* for Firefox).\n"
-                    "2. Go to **[youtube.com](https://youtube.com)** while logged in.\n"
-                    "3. Click the extension → **Export** → upload the saved file below.\n\n"
-                    "⚠️ Cookies are used only for this download session and are never "
-                    "persisted to disk beyond the current browser tab.\n\n"
-                    "**App operators:** add `YOUTUBE_COOKIES_TXT` to Streamlit Secrets "
-                    "to pre-load cookies and hide this uploader from users entirely."
-                )
-                cookie_file = st.file_uploader(
-                    "Upload cookies.txt (Netscape format)",
-                    type=["txt"],
-                    key="yt_cookies_upload",
-                    help="Export from Chrome/Firefox using 'Get cookies.txt LOCALLY' or equivalent.",
-                )
-                if cookie_file is not None:
-                    cookie_content = cookie_file.getvalue().decode("utf-8", errors="ignore")
-                    valid, val_msg = _validate_cookies_txt(cookie_content)
-                    if valid:
-                        st.success(val_msg)
-                        _cf = tempfile.NamedTemporaryFile(
-                            mode="w", suffix=".txt", delete=False, encoding="utf-8")
-                        _cf.write(cookie_content)
-                        _cf.close()
-                        cookie_path = _cf.name
-                        st.session_state["cookie_path"] = cookie_path
-                    else:
-                        st.error(val_msg)
-                        st.session_state.pop("cookie_path", None)
-                elif "cookie_path" in st.session_state:
-                    cookie_path = st.session_state["cookie_path"]
-                    if os.path.exists(cookie_path):
-                        st.info("🍪 Using cookies from earlier upload this session.")
-                    else:
-                        st.session_state.pop("cookie_path", None)
-                        cookie_path = None
-
-                if not cookie_path:
-                    st.caption(
-                        "Without cookies the download falls back to the `android_vr` "
-                        "client, which may still be blocked on Streamlit Cloud's AWS IPs."
-                    )
+        st.caption("🤖 Credits set automatically per clip — trailer, Wikipedia, or OpenVerse CC.")
 
     st.markdown("---")
 
@@ -1928,20 +1954,20 @@ with tab6:
         missing.append("✗ No topic — complete Step 1 first")
     if not api_key:
         missing.append("✗ Gemini API Key required (sidebar)")
-    if not pexels_key:
-        missing.append("✗ Pexels API Key required above")
-    if mode == MODE_FILM and not tmdb_key:
-        missing.append("✗ TMDB API Key required for Film & Series mode — add it in the sidebar")
 
     if missing:
         for m in missing:
             st.warning(m)
     else:
         if mode == MODE_FILM:
+            st.caption(
+                "ℹ️ Trailers sourced from **hd-trailers.net → Apple CDN**, "
+                "**Apple Trailers XML**, **IMDb**, and **Internet Archive** — "
+                "no API keys, no login required."
+            )
             if st.button("🎞️ Pre-fetch Trailer (optional but recommended)"):
-                with st.spinner(f"Downloading {topic_val} official trailer…"):
-                    tp = _download_trailer(topic_val, tmdb_key,
-                                           cookie_path=cookie_path)
+                with st.spinner(f"Fetching {topic_val} trailer…"):
+                    tp = _download_trailer(topic_val)
                     if tp:
                         segs = _extract_trailer_segments(tp)
                         st.session_state["trailer_path"] = tp
@@ -1950,21 +1976,11 @@ with tab6:
                     else:
                         st.session_state["trailer_path"] = None
                         st.session_state["trailer_segs"] = []
-                        if cookie_path:
-                            st.warning(
-                                "Trailer download failed even with cookies. "
-                                "Your cookies may have expired — try re-exporting from "
-                                "your browser while logged in to youtube.com. "
-                                "Assembly will use TMDB stills and Pexels B-roll instead."
-                            )
-                        else:
-                            st.warning(
-                                "Trailer download failed (no cookies supplied — "
-                                "YouTube blocked the cloud server IP). "
-                                "Upload a cookies.txt file above and try again, or "
-                                "proceed without the trailer — assembly will use "
-                                "TMDB stills and Pexels B-roll instead."
-                            )
+                        st.warning(
+                            "Trailer not found across all four sources. "
+                            "Assembly will use Wikipedia images and OpenVerse "
+                            "CC B-roll instead — the video will still complete."
+                        )
 
         # Shot list
         if st.button("🎬 Generate Shot List"):
@@ -1979,19 +1995,25 @@ with tab6:
             st.success(f"Shot list ready — **{len(sl)} clips**, ~**{int(total_dur)}s** total")
 
             type_icons = {
-                "trailer_clip": "🎬", "tmdb_poster":  "🖼️",
-                "tmdb_backdrop":"🎞️", "tmdb_cast":    "👤",
-                "pexels_broll": "🌆", "wiki_image":   "📖",
-                "text_card":    "📝", "stat_card":    "📊",
-                "code_card":    "💻", "chapter_card": "📌",
+                "trailer_clip":    "🎬",
+                "wiki_image":      "📖",
+                "tmdb_poster":     "🖼️",   # handled by wiki_image internally
+                "tmdb_backdrop":   "🎞️",   # handled by wiki_image internally
+                "tmdb_cast":       "👤",   # handled by wiki_image internally
+                "pexels_broll":    "🌆",   # handled by openverse internally
+                "openverse_image": "🌆",
+                "text_card":       "📝",
+                "stat_card":       "📊",
+                "code_card":       "💻",
+                "chapter_card":    "📌",
             }
             with st.expander("📋 View Shot List", expanded=False):
                 for s in sl:
                     icon   = type_icons.get(s.get("type", ""), "▪️")
-                    detail = (s.get("pexels_query") or s.get("cast_name") or
-                              s.get("wiki_title")   or s.get("text_line1") or
-                              s.get("stat_value")   or s.get("chapter_title") or
-                              s.get("trailer_timestamp") or s.get("note", ""))
+                    detail = (s.get("image_query") or s.get("pexels_query") or
+                              s.get("cast_name")   or s.get("wiki_title")   or
+                              s.get("text_line1")  or s.get("stat_value")   or
+                              s.get("chapter_title") or s.get("note", ""))
                     st.markdown(
                         f"`{s.get('segment_index',0):02d}` {icon} "
                         f"**{s.get('type','')}** — "
@@ -2016,12 +2038,9 @@ with tab6:
                             shot_list       = sl,
                             mode            = mode,
                             topic           = topic_val,
-                            tmdb_key        = tmdb_key,
-                            pexels_key      = pexels_key,
                             output_path     = output_path,
                             is_shorts       = is_shorts,
                             credit_override = credit_override,
-                            cookie_path     = cookie_path,
                         ),
                         daemon=True,
                     )
@@ -2061,4 +2080,4 @@ with tab6:
 # FOOTER
 # ─────────────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption("SudoVid v1.3 | AI-Powered Script, Voice & Video Engine")
+st.caption("SudoVid v2.0 | AI-Powered Script, Voice & Video Engine | Zero API Keys Required")

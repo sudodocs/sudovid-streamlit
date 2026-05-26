@@ -598,34 +598,37 @@ def _apple_trailers_xml(topic: str) -> str | None:
             return None
 
     try:
-        root       = ET.fromstring(xml_text)
-        topic_low  = topic.lower()
-        best_url   = None
+        root = ET.fromstring(xml_text)
+        topic_low = topic.lower()
+        best_url = None
         best_score = 0.0
 
-        for movie in root.findall("movieinfo"):
-            title_el = movie.find("./info/title")
+        for movie in root.findall(".//movieinfo"):
+            title_el = movie.find("info/title")
             if title_el is None or not title_el.text:
                 continue
 
             score = difflib.SequenceMatcher(
-                None, topic_low, title_el.text.lower()).ratio()
+                None, topic_low, title_el.text.lower()
+            ).ratio()
             if score < 0.60:
                 continue
 
-            for quality in ("hd720p", "hd1080p", "hd480p"):
-                src_el = movie.find(f'.//videosize[@type="{quality}"]/src')
-                if src_el is not None and src_el.text and \
-                        "movietrailers.apple.com" in src_el.text:
-                    if score > best_score:
-                        best_score = score
-                        best_url   = src_el.text
-                    break  # found best quality for this title
-
-    except Exception:
+            # A more robust way to find the video URL
+            video_el = movie.find("video")
+            if video_el is not None:
+                for quality in ("hd720p", "hd1080p", "hd480p"):
+                    src_el = video_el.find(f'.//videosize[@type="{quality}"]/src')
+                    if src_el is not None and src_el.text and "movietrailers.apple.com" in src_el.text:
+                        if score > best_score:
+                            best_score = score
+                            best_url = src_el.text
+                        break  # found best quality for this title
+    except ET.ParseError:
         return None
-
+    
     return best_url
+
 
 
 def _internet_archive_trailer(topic: str) -> str | None:
@@ -689,65 +692,26 @@ def _internet_archive_trailer(topic: str) -> str | None:
 def _imdb_trailer_url(topic: str) -> str | None:
     """
     Find an IMDb trailer video page URL (https://www.imdb.com/video/vi{id})
-    for a given film or series title. No API key required.
-
-    Why IMDb works perfectly from Streamlit Cloud:
-      IMDb video files are served from *.media-imdb.com (Amazon CloudFront)
-      — the same AWS infrastructure Streamlit Cloud runs on. No IP-based
-      blocking, no bot detection, no auth required for public trailers.
-
-    Lookup chain:
-      1. IMDb suggest API  → tt-ID  (fast, key-free, official IMDb endpoint)
-      2. IMDb find page    → tt-ID  (fallback, standard web page)
-      3. IMDb videogallery → vi-ID  (parse __NEXT_DATA__ JSON)
-      4. Return imdb.com/video/vi{id} for yt-dlp's IMDb extractor.
+    for a given film or series title using yt-dlp.
     """
-    tt_id: str | None = None
-
-    # Step 1a: IMDb suggest API (official, key-free)
     try:
-        slug = re.sub(r"[^a-z0-9 ]", "", topic.lower()).strip()
-        r = requests.get(
-            f"https://v3.sg.media-imdb.com/suggestion/x/{slug}.json",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10,
-        ).json()
-        for item in r.get("d", []):
-            if item.get("qid") in ("movie", "tvSeries", "tvMiniSeries"):
-                tt_id = item.get("id")
-                break
+        import yt_dlp
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "simulate": True,  # Do not download the video
+            "forceurl": True,  # Get the direct video URL
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            # Search for the movie on IMDb
+            search_results = ydl.extract_info(f"ytsearch: {topic} trailer imdb", download=False)
+            if search_results and 'entries' in search_results and search_results['entries']:
+                # Return the URL of the first search result
+                return search_results['entries'][0]['url']
     except Exception:
         pass
+    return None
 
-    # Step 1b: IMDb find page (standard web page, no IP blocking)
-    if not tt_id:
-        try:
-            r = requests.get(
-                "https://www.imdb.com/find/",
-                params={"q": topic, "s": "tt", "ttype": "ft"},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
-                timeout=12,
-            )
-            r.raise_for_status()
-            m = re.search(
-                r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
-                r.text, re.DOTALL)
-            if m:
-                data    = json.loads(m.group(1))
-                results = (data.get("props", {})
-                               .get("pageProps", {})
-                               .get("titleResults", {})
-                               .get("results", []))
-                if results:
-                    tt_id = results[0].get("id")
-        except Exception:
-            pass
-
-    if not tt_id:
-        return None
 
     # Step 2: tt-ID → vi-ID from the videogallery page __NEXT_DATA__
     try:
@@ -768,9 +732,22 @@ def _imdb_trailer_url(topic: str) -> str | None:
         m = re.search(
             r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
             r.text, re.DOTALL)
+        try:
+            data = json.loads(m.group(1))
+            # The new structure is nested under mainColumnData
+            videos = data.get("props", {}).get("pageProps", {}).get("mainColumnData", {}).get("videos", {}).get("edges", [])
+            if videos:
+                vi_id = videos[0].get("node", {}).get("id")
+                if vi_id:
+                    return f"https://www.imdb.com/video/{vi_id}"
+        except (json.JSONDecodeError, KeyError):
+            # The structure of the JSON was not as expected, so we fall back
+            pass
+        
+        # Fallback to the old logic if the new one fails
         if not m:
             return None
-
+        
         data  = json.loads(m.group(1))
         edges = (data.get("props", {})
                      .get("pageProps", {})
@@ -778,7 +755,7 @@ def _imdb_trailer_url(topic: str) -> str | None:
                      .get("entityMetadata", {})
                      .get("primaryVideos", {})
                      .get("edges", []))
-
+        
         vi_id: str | None = None
         for edge in edges:
             node     = edge.get("node", {})
@@ -790,9 +767,10 @@ def _imdb_trailer_url(topic: str) -> str | None:
                 if "trailer" in vid_name:
                     vi_id = vid_id          # prefer trailer-labelled
                     break
-
+        
         if vi_id:
             return f"https://www.imdb.com/video/{vi_id}"
+
 
     except Exception:
         pass

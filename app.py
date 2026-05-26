@@ -691,96 +691,28 @@ def _internet_archive_trailer(topic: str) -> str | None:
         pass
     return None
 
-
-def _find_imdb_trailer_id(topic: str) -> str | None:
-    """
-    Search IMDB for a film/series and return its primary trailer vi-ID.
-    Uses the IMDB suggestions API (no key, no login required).
-    Returns a string like 'vi1234567890' or None.
-    """
-    try:
-        # IMDB's autosuggest endpoint — same one the search bar uses
-        slug = re.sub(r"[^a-z0-9 ]", "", topic.lower()).strip().replace(" ", "_")
-        r = requests.get(
-            f"https://v2.sg.media-imdb.com/suggestion/x/{slug}.json",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10,
-        )
-        r.raise_for_status()
-        results = r.json().get("d", [])
-
-        # Find the first movie/series result with a tt-ID
-        tt_id = None
-        for item in results:
-            if item.get("id", "").startswith("tt"):
-                tt_id = item["id"]
-                break
-        if not tt_id:
-            return None
-
-        # Fetch the title's videogallery page to get the primary trailer vi-ID
-        vg = requests.get(
-            f"https://www.imdb.com/title/{tt_id}/videogallery/",
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/125.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-            timeout=15,
-        )
-        vg.raise_for_status()
-
-        # The __NEXT_DATA__ JSON blob contains the video list
-        m = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
-            vg.text, re.DOTALL
-        )
-        if not m:
-            return None
-
-        data = json.loads(m.group(1))
-        edges = (data.get("props", {})
-                     .get("pageProps", {})
-                     .get("mainColumnData", {})
-                     .get("videos", {})
-                     .get("edges", []))
-
-        vi_id = None
-        trailer_id = None
-        
-        for edge in edges:
-            node   = edge.get("node", {})
-            vid_id = node.get("id", "")
-            name   = (node.get("name") or {}).get("value", "").lower()
-            
-            if vid_id.startswith("vi"):
-                if not vi_id:
-                    vi_id = vid_id          # first video as absolute fallback
-                    
-                if "trailer" in name:
-                    if not trailer_id:
-                        trailer_id = vid_id # save first trailer found as backup
-                        
-                if "official trailer" in name:
-                    return vid_id           # PERFECT MATCH, stop immediately!
-                    
-        return trailer_id or vi_id
-
-    except Exception:
-        return None
-
-
 def _imdb_trailer_url(topic: str) -> str | None:
     """
-    Return a proper https://www.imdb.com/video/vi{id} URL.
-    yt-dlp's built-in IMDB extractor handles everything from here —
-    it calls IMDB's VIDEO_PLAYBACK_DATA API and streams from their CDN.
-    No YouTube, no PO tokens, no bot detection.
+    Search for the trailer dynamically using yt-dlp.
+    Bypasses fragile HTML scraping entirely.
     """
-    vi_id = _find_imdb_trailer_id(topic)
-    if vi_id:
-        return f"https://www.imdb.com/video/{vi_id}"
+    try:
+        import yt_dlp
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": True  # Only extract info, don't download the video yet
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            # Dynamically execute the exact search you requested:
+            info = ydl.extract_info(f"ytsearch:{topic} official trailer", download=False)
+            
+            if info and info.get("entries"):
+                entries = list(info["entries"])
+                if entries:
+                    return entries[0].get("url")
+    except Exception:
+        pass
     return None
 
 

@@ -747,16 +747,25 @@ def _find_imdb_trailer_id(topic: str) -> str | None:
                      .get("edges", []))
 
         vi_id = None
+        trailer_id = None
+        
         for edge in edges:
             node   = edge.get("node", {})
             vid_id = node.get("id", "")
             name   = (node.get("name") or {}).get("value", "").lower()
+            
             if vid_id.startswith("vi"):
                 if not vi_id:
-                    vi_id = vid_id          # first video as fallback
+                    vi_id = vid_id          # first video as absolute fallback
+                    
                 if "trailer" in name:
-                    return vid_id           # prefer trailer-labelled, stop immediately
-        return vi_id
+                    if not trailer_id:
+                        trailer_id = vid_id # save first trailer found as backup
+                        
+                if "official trailer" in name:
+                    return vid_id           # PERFECT MATCH, stop immediately!
+                    
+        return trailer_id or vi_id
 
     except Exception:
         return None

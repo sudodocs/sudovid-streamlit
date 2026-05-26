@@ -692,31 +692,28 @@ def _internet_archive_trailer(topic: str) -> str | None:
     return None
 
 def _imdb_trailer_url(topic: str) -> str | None:
-    """
-    Search for the trailer dynamically using yt-dlp.
-    Filters out VR game promos and interviews from YouTube's top results.
-    """
     try:
         import yt_dlp
         opts = {
             "quiet": True,
             "no_warnings": True,
-            "extract_flat": True  # Only extract info, don't download the video yet
+            "extract_flat": True  # Only read titles, don't download yet
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
-            # Fetch the top 5 results instead of just the first one
-            info = ydl.extract_info(f"ytsearch5:{topic} official movie trailer", download=False)
+            # Fetch the top 5 results instead of blindly taking the 1st
+            search_query = f'ytsearch5:"{topic}" official movie trailer'
+            info = ydl.extract_info(search_query, download=False)
             
             if info and info.get("entries"):
                 for entry in info["entries"]:
                     title = entry.get("title", "").lower()
                     
-                    # Actively filter out the VR Game and FanFest videos
+                    # Actively filter out the VR Game and Interview videos
                     bad_words = ["game", "vr", "mixed reality", "fanfest", "interview", "react", "panel"]
                     if any(word in title for word in bad_words):
-                        continue # Skip this result and check the next one
+                        continue # Skip the game promo and check the next video!
                         
-                    return entry.get("url") # Return the first clean movie trailer
+                    return entry.get("url") # Returns the first clean cinematic trailer
     except Exception:
         pass
     return None
@@ -1434,31 +1431,73 @@ def _resolve_clip(shot, mode,
 
 def _assembly_worker(audio_path, shot_list, mode, topic,
                      output_path, is_shorts, credit_override,
-                     trailer_path=None, trailer_segs=None):   # ← new params
+                     trailer_path=None, trailer_segs=None):
     try:
         cw, ch = _canvas(is_shorts)
+        audio = AudioFileClip(audio_path)
 
-        # ── Trailer (film mode) ────────────────────────────────────────────
+        # ── FILM MODE: Simplified Trailer-Only Approach ───────────────────────────
         if mode == MODE_FILM:
             if trailer_path and os.path.exists(trailer_path):
-                # Use pre-fetched result — skip re-download
-                _write_progress(6, f"Using pre-fetched trailer — "
-                                   f"{len(trailer_segs or [])} segments")
+                _write_progress(10, "Using pre-fetched trailer...")
             else:
-                _write_progress(2, "Searching for official trailer…")
+                _write_progress(10, "Searching for official trailer...")
                 trailer_path = _download_trailer(topic)
-                if trailer_path:
-                    n_segs = 4 if is_shorts else 8
-                    trailer_segs = _extract_trailer_segments(
-                        trailer_path, num_segments=n_segs, seg_duration=8.0)
-                    _write_progress(6, f"Trailer ready — {len(trailer_segs)} segments")
-                else:
-                    trailer_segs = []
-                    _write_progress(6, "Trailer not found — using stills only")
-        else:
-            trailer_segs = trailer_segs or []
 
-        # ── Build clips ───────────────────────────────────────────────────────
+            if trailer_path:
+                _write_progress(40, "Formatting trailer to fit screen...")
+                video = VideoFileClip(trailer_path)
+
+                # 1. Trim or loop the video to match the audio exactly
+                if video.duration < audio.duration:
+                    from moviepy.video.fx.all import loop
+                    video = video.fx(loop, duration=audio.duration)
+                else:
+                    # Safely skip the first 2 seconds (usually studio logos)
+                    start_time = 2.0 if video.duration > (audio.duration + 2.0) else 0.0
+                    video = video.subclip(start_time, start_time + audio.duration)
+
+                # 2. Crop it perfectly to fill the canvas (e.g. 9:16 for Shorts)
+                scale = max(cw / video.w, ch / video.h)
+                video = (video.resize(scale)
+                              .crop(x_center=video.w * scale / 2,
+                                    y_center=video.h * scale / 2,
+                                    width=cw, height=ch))
+
+                _assembled = video.set_audio(audio)
+                
+                # 3. Add the credit overlay
+                _write_progress(70, "Adding credit overlay...")
+                credit_text = credit_override or f"Courtesy: {topic} Official Trailer"
+                
+                def _overlay_frame(t):
+                    f = _assembled.get_frame(t)
+                    return _add_credit_overlay(f, credit_text, is_shorts, cw, ch)
+
+                final = VideoClip(_overlay_frame, duration=_assembled.duration).set_audio(audio)
+
+                _write_progress(85, "Rendering final MP4 (this takes ~60s)...")
+                final.write_videofile(
+                    output_path, fps=FPS, codec="libx264",
+                    audio_codec="aac", preset="ultrafast",
+                    threads=2, logger=None,
+                )
+                _write_progress(100, "Done!", done=True)
+                
+                # Clean up MoviePy objects to free memory
+                video.close()
+                audio.close()
+                final.close()
+                return  # Exit early, we're completely done!
+            
+            else:
+                _write_progress(15, "Trailer not found — falling back to stills")
+
+        # ─────────────────────────────────────────────────────────────────────────────
+        # ORIGINAL LOGIC: Kept intact for Tech/Edu modes (or if trailer fails)
+        # ─────────────────────────────────────────────────────────────────────────────
+        
+        trailer_segs = trailer_segs or []
         total        = len(shot_list)
         used_urls    = set()
         trailer_idx  = [0]
@@ -1469,7 +1508,7 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
         running_time  = 0.0
 
         for i, shot in enumerate(shot_list):
-            pct = 12 + int(68 * i / total)
+            pct = 20 + int(60 * i / total)
             _write_progress(pct,
                 f"Building clip {i+1}/{total} [{shot.get('type','?')}] — "
                 f"{shot.get('note','')}")
@@ -1493,13 +1532,11 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
             clips.append(clip)
 
         # ── Stitch ────────────────────────────────────────────────────────────
-        _write_progress(82, "Stitching clips…")
+        _write_progress(82, "Stitching clips...")
         video = concatenate_videoclips(clips, method="compose")
 
         # ── Audio ─────────────────────────────────────────────────────────────
-        _write_progress(87, "Attaching voiceover…")
-        audio = AudioFileClip(audio_path)
-
+        _write_progress(87, "Attaching voiceover...")
         if video.duration < audio.duration:
             extra  = audio.duration - video.duration + clips[-1].duration
             last_frame = clips[-1].get_frame(0)
@@ -1510,7 +1547,7 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
         _assembled = video.subclip(0, audio.duration).set_audio(audio)
 
         # ── Credit overlay ────────────────────────────────────────────────────
-        _write_progress(91, "Adding credit overlay…")
+        _write_progress(91, "Adding credit overlay...")
 
         def _credit_at(t):
             if credit_override:
@@ -1527,13 +1564,17 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
             _assembled.audio)
 
         # ── Render ────────────────────────────────────────────────────────────
-        _write_progress(93, "Rendering MP4 (this takes ~60s)…")
+        _write_progress(93, "Rendering MP4 (this takes ~60s)...")
         final.write_videofile(
             output_path, fps=FPS, codec="libx264",
             audio_codec="aac", preset="ultrafast",
             threads=2, logger=None,
         )
         _write_progress(100, "Done!", done=True)
+        
+        video.close()
+        audio.close()
+        final.close()
 
     except Exception as e:
         _write_progress(0, "", done=True, error=str(e))

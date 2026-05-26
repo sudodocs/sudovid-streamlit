@@ -694,7 +694,7 @@ def _internet_archive_trailer(topic: str) -> str | None:
 def _imdb_trailer_url(topic: str) -> str | None:
     """
     Search for the trailer dynamically using yt-dlp.
-    Bypasses fragile HTML scraping entirely.
+    Filters out VR game promos and interviews from YouTube's top results.
     """
     try:
         import yt_dlp
@@ -704,27 +704,33 @@ def _imdb_trailer_url(topic: str) -> str | None:
             "extract_flat": True  # Only extract info, don't download the video yet
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
-            # Dynamically execute the exact search you requested:
-            info = ydl.extract_info(f"ytsearch:{topic} official trailer", download=False)
+            # Fetch the top 5 results instead of just the first one
+            info = ydl.extract_info(f"ytsearch5:{topic} official movie trailer", download=False)
             
             if info and info.get("entries"):
-                entries = list(info["entries"])
-                if entries:
-                    return entries[0].get("url")
+                for entry in info["entries"]:
+                    title = entry.get("title", "").lower()
+                    
+                    # Actively filter out the VR Game and FanFest videos
+                    bad_words = ["game", "vr", "mixed reality", "fanfest", "interview", "react", "panel"]
+                    if any(word in title for word in bad_words):
+                        continue # Skip this result and check the next one
+                        
+                    return entry.get("url") # Return the first clean movie trailer
     except Exception:
         pass
     return None
 
 
 def _download_imdb_trailer(imdb_video_url: str, out_path: str) -> bool:
-    """
-    Download a trailer from an IMDb video page using yt-dlp's IMDb extractor.
-    Videos are served from *.media-imdb.com (Amazon CloudFront) — no auth,
-    no bot detection, works from any IP including Streamlit Cloud's AWS range.
-    Returns True on success.
-    """
     try:
         import yt_dlp
+        
+        # Force delete the old file so yt-dlp doesn't silently skip
+        if os.path.exists(out_path):
+            try: os.remove(out_path)
+            except: pass
+            
         opts = {
             "format": "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]",
             "outtmpl":             out_path,
@@ -733,6 +739,7 @@ def _download_imdb_trailer(imdb_video_url: str, out_path: str) -> bool:
             "merge_output_format": "mp4",
             "retries":             5,
             "socket_timeout":      30,
+            "overwrites":          True, # Force yt-dlp to overwrite
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([imdb_video_url])
@@ -758,11 +765,15 @@ def _download_trailer(topic: str) -> str | None:
     """
     safe_name = re.sub(r"[^a-z0-9]", "_", topic.lower())
     out_path  = os.path.join(tempfile.gettempdir(), f"trailer_{safe_name}.mov")
+    out_path_mp4 = out_path.replace(".mov", ".mp4")
+    out_path_archive = out_path.replace(".mov", "_archive.mp4")
 
-    if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
-        if _verify_trailer(out_path):
-            return out_path
-        os.remove(out_path)
+    # Check ALL possible cached extensions, not just .mov
+    for p in [out_path, out_path_mp4, out_path_archive]:
+        if os.path.exists(p):
+            if os.path.getsize(p) > 100_000 and _verify_trailer(p):
+                return p
+            os.remove(p)
 
     # ── Source 1: hd-trailers.net ─────────────────────────────────────────────
     try:
@@ -1564,6 +1575,12 @@ with st.sidebar:
 
     st.divider()
     if st.button("Reset All Steps"):
+        tmp_dir = tempfile.gettempdir()
+        for f in os.listdir(tmp_dir):
+            if f.startswith("trailer_"):
+                try: os.remove(os.path.join(tmp_dir, f))
+                except: pass
+                
         st.session_state.clear()
         st.rerun()
 

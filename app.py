@@ -689,91 +689,86 @@ def _internet_archive_trailer(topic: str) -> str | None:
     return None
 
 
-def _imdb_trailer_url(topic: str) -> str | None:
+def _find_imdb_trailer_id(topic: str) -> str | None:
     """
-    Find an IMDb trailer video page URL (https://www.imdb.com/video/vi{id})
-    for a given film or series title using yt-dlp.
+    Search IMDB for a film/series and return its primary trailer vi-ID.
+    Uses the IMDB suggestions API (no key, no login required).
+    Returns a string like 'vi1234567890' or None.
     """
     try:
-        import yt_dlp
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "simulate": True,  # Do not download the video
-            "forceurl": True,  # Get the direct video URL
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            # Search for the movie on IMDb
-            search_results = ydl.extract_info(f"ytsearch: {topic} trailer imdb", download=False)
-            if search_results and 'entries' in search_results and search_results['entries']:
-                # Return the URL of the first search result
-                return search_results['entries'][0]['url']
-    except Exception:
-        pass
-    return None
-
-
-    # Step 2: tt-ID → vi-ID from the videogallery page __NEXT_DATA__
-    try:
+        # IMDB's autosuggest endpoint — same one the search bar uses
+        slug = re.sub(r"[^a-z0-9 ]", "", topic.lower()).strip().replace(" ", "_")
         r = requests.get(
+            f"https://v2.sg.media-imdb.com/suggestion/x/{slug}.json",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        results = r.json().get("d", [])
+
+        # Find the first movie/series result with a tt-ID
+        tt_id = None
+        for item in results:
+            if item.get("id", "").startswith("tt"):
+                tt_id = item["id"]
+                break
+        if not tt_id:
+            return None
+
+        # Fetch the title's videogallery page to get the primary trailer vi-ID
+        vg = requests.get(
             f"https://www.imdb.com/title/{tt_id}/videogallery/",
             headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/125.0.0.0 Safari/537.36"
-                ),
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/125.0.0.0 Safari/537.36",
                 "Accept-Language": "en-US,en;q=0.9",
             },
             timeout=15,
         )
-        r.raise_for_status()
+        vg.raise_for_status()
 
+        # The __NEXT_DATA__ JSON blob contains the video list
         m = re.search(
             r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
-            r.text, re.DOTALL)
-        try:
-            data = json.loads(m.group(1))
-            # The new structure is nested under mainColumnData
-            videos = data.get("props", {}).get("pageProps", {}).get("mainColumnData", {}).get("videos", {}).get("edges", [])
-            if videos:
-                vi_id = videos[0].get("node", {}).get("id")
-                if vi_id:
-                    return f"https://www.imdb.com/video/{vi_id}"
-        except (json.JSONDecodeError, KeyError):
-            # The structure of the JSON was not as expected, so we fall back
-            pass
-        
-        # Fallback to the old logic if the new one fails
+            vg.text, re.DOTALL
+        )
         if not m:
             return None
-        
-        data  = json.loads(m.group(1))
+
+        data = json.loads(m.group(1))
         edges = (data.get("props", {})
                      .get("pageProps", {})
-                     .get("contentData", {})
-                     .get("entityMetadata", {})
-                     .get("primaryVideos", {})
+                     .get("mainColumnData", {})
+                     .get("videos", {})
                      .get("edges", []))
-        
-        vi_id: str | None = None
+
+        vi_id = None
         for edge in edges:
-            node     = edge.get("node", {})
-            vid_id   = node.get("id", "")
-            vid_name = (node.get("name") or {}).get("value", "").lower()
+            node   = edge.get("node", {})
+            vid_id = node.get("id", "")
+            name   = (node.get("name") or {}).get("value", "").lower()
             if vid_id.startswith("vi"):
                 if not vi_id:
                     vi_id = vid_id          # first video as fallback
-                if "trailer" in vid_name:
-                    vi_id = vid_id          # prefer trailer-labelled
-                    break
-        
-        if vi_id:
-            return f"https://www.imdb.com/video/{vi_id}"
-
+                if "trailer" in name:
+                    return vid_id           # prefer trailer-labelled, stop immediately
+        return vi_id
 
     except Exception:
-        pass
+        return None
+
+
+def _imdb_trailer_url(topic: str) -> str | None:
+    """
+    Return a proper https://www.imdb.com/video/vi{id} URL.
+    yt-dlp's built-in IMDB extractor handles everything from here —
+    it calls IMDB's VIDEO_PLAYBACK_DATA API and streams from their CDN.
+    No YouTube, no PO tokens, no bot detection.
+    """
+    vi_id = _find_imdb_trailer_id(topic)
+    if vi_id:
+        return f"https://www.imdb.com/video/{vi_id}"
     return None
 
 
@@ -821,7 +816,9 @@ def _download_trailer(topic: str) -> str | None:
     out_path  = os.path.join(tempfile.gettempdir(), f"trailer_{safe_name}.mov")
 
     if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
-        return out_path
+        if _verify_trailer(out_path):
+            return out_path
+        os.remove(out_path)
 
     # ── Source 1: hd-trailers.net ─────────────────────────────────────────────
     try:
@@ -896,6 +893,15 @@ def _extract_trailer_segments(video_path: str,
     except Exception:
         return []
 
+def _verify_trailer(path: str) -> bool:
+    """Return True only if the file can be opened by MoviePy."""
+    try:
+        vc = VideoFileClip(path)
+        ok = vc.duration > 0
+        vc.close()
+        return ok
+    except Exception:
+        return False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CREDIT OVERLAY
@@ -1043,17 +1049,17 @@ def make_code_card(snippet, language="", cw=1280, ch=720):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _zoom_clip(arr: np.ndarray, duration: float, zoom_in: bool = True):
-    pil = Image.fromarray(arr)
+    pil = Image.fromarray(arr.astype(np.uint8))   # ensure input is uint8
     h0, w0 = arr.shape[:2]
 
     def make_frame(t):
         p     = t / max(duration, 0.001)
         scale = 1.0 + 0.04 * (p if zoom_in else (1 - p))
         nw, nh = int(w0 * scale), int(h0 * scale)
-        res   = np.array(pil.resize((nw, nh), Image.BILINEAR))
-        x0_ = (nw - w0) // 2
-        y0_ = (nh - h0) // 2
-        return res[y0_:y0_ + h0, x0_:x0_ + w0]
+        res    = np.array(pil.resize((nw, nh), Image.BILINEAR))
+        x0_    = (nw - w0) // 2
+        y0_    = (nh - h0) // 2
+        return res[y0_:y0_ + h0, x0_:x0_ + w0].astype(np.float64)  # ← fix
 
     return VideoClip(make_frame, duration=duration)
 
@@ -1471,23 +1477,30 @@ def _resolve_clip(shot, mode,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _assembly_worker(audio_path, shot_list, mode, topic,
-                     output_path, is_shorts, credit_override):
+                     output_path, is_shorts, credit_override,
+                     trailer_path=None, trailer_segs=None):   # ← new params
     try:
         cw, ch = _canvas(is_shorts)
 
-        # ── Trailer download (film mode only) ─────────────────────────────────
-        trailer_path = None
-        trailer_segs = []
+        # ── Trailer (film mode) ────────────────────────────────────────────
         if mode == MODE_FILM:
-            _write_progress(2, "Searching for official trailer…")
-            trailer_path = _download_trailer(topic)
-            if trailer_path:
-                n_segs = 4 if is_shorts else 8
-                trailer_segs = _extract_trailer_segments(
-                    trailer_path, num_segments=n_segs, seg_duration=8.0)
-                _write_progress(6, f"Trailer ready — {len(trailer_segs)} segments")
+            if trailer_path and os.path.exists(trailer_path):
+                # Use pre-fetched result — skip re-download
+                _write_progress(6, f"Using pre-fetched trailer — "
+                                   f"{len(trailer_segs or [])} segments")
             else:
-                _write_progress(6, "Trailer not found — using stills only")
+                _write_progress(2, "Searching for official trailer…")
+                trailer_path = _download_trailer(topic)
+                if trailer_path:
+                    n_segs = 4 if is_shorts else 8
+                    trailer_segs = _extract_trailer_segments(
+                        trailer_path, num_segments=n_segs, seg_duration=8.0)
+                    _write_progress(6, f"Trailer ready — {len(trailer_segs)} segments")
+                else:
+                    trailer_segs = []
+                    _write_progress(6, "Trailer not found — using stills only")
+        else:
+            trailer_segs = trailer_segs or []
 
         # ── Build clips ───────────────────────────────────────────────────────
         total        = len(shot_list)
@@ -2019,6 +2032,8 @@ with tab6:
                             output_path     = output_path,
                             is_shorts       = is_shorts,
                             credit_override = credit_override,
+                            trailer_path    = st.session_state.get("trailer_path"),
+                            trailer_segs    = st.session_state.get("trailer_segs"),
                         ),
                         daemon=True,
                     )

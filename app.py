@@ -15,6 +15,9 @@ import numpy as np
 import edge_tts
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+# Monkey-patch to fix MoviePy 1.0.3 compatibility with Pillow 10+
+if not hasattr(Image, "ANTIALIAS"):
+    Image.ANTIALIAS = Image.LANCZOS
 from moviepy.editor import AudioFileClip, concatenate_videoclips, VideoFileClip
 from moviepy.video.VideoClip import VideoClip
 
@@ -969,7 +972,7 @@ def make_text_card(line1, line2="", label="", mode=MODE_FILM, cw=1280, ch=720):
     accent = _accent_for_mode(mode)
     img, draw = _base_card(accent, cw, ch)
     cy = ch // 2
-    scale = ch / 720
+    scale = cw / 1280
     if label:
         draw.text((cw // 2, cy - int(100 * scale)), label.upper(),
                   font=_font(max(16, int(22 * scale))), fill=accent, anchor="mm")
@@ -986,7 +989,7 @@ def make_text_card(line1, line2="", label="", mode=MODE_FILM, cw=1280, ch=720):
 def make_chapter_card(chapter_num, title, mode=MODE_FILM, cw=1280, ch=720):
     accent = _accent_for_mode(mode)
     img, draw = _base_card(accent, cw, ch)
-    scale = ch / 720
+    scale = cw / 1280
     draw.text((cw - int(60 * scale), ch - int(40 * scale)), f"#{chapter_num}",
               font=_font(max(48, int(96 * scale)), bold=True),
               fill=(*accent, 30), anchor="rb")
@@ -1002,7 +1005,7 @@ def make_chapter_card(chapter_num, title, mode=MODE_FILM, cw=1280, ch=720):
 def make_stat_card(stat, description, mode=MODE_TECH, cw=1280, ch=720):
     accent = _accent_for_mode(mode)
     img, draw = _base_card(accent, cw, ch)
-    scale = ch / 720
+    scale = cw / 1280
     draw.text((cw // 2, ch // 2 - int(60 * scale)), stat,
               font=_font(max(48, int(110 * scale)), bold=True),
               fill=_TEXT_HI, anchor="mm")
@@ -1014,7 +1017,7 @@ def make_stat_card(stat, description, mode=MODE_TECH, cw=1280, ch=720):
 def make_code_card(snippet, language="", cw=1280, ch=720):
     img  = Image.new("RGB", (cw, ch), (18, 20, 30))
     draw = ImageDraw.Draw(img)
-    scale = ch / 720
+    scale = cw / 1280
     header_h = int(44 * scale)
     draw.rectangle([(0, 0), (cw, header_h)], fill=(30, 32, 44))
     dot_r = int(7 * scale)
@@ -1393,6 +1396,7 @@ def _resolve_clip(shot, mode,
                 clip_credit = f"Courtesy: {topic} Official Trailer"
                 return vc, clip_credit
             except Exception:
+                stype = "tmdb_backdrop"
                 pass  # fall through to stills
 
     # ── WIKI IMAGE (poster, cast, backdrop, logo, diagram) ───────────────────

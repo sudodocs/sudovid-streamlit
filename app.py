@@ -1,5 +1,5 @@
 import streamlit as st
-import google.generativeai as genai  # kept for GenerativeModel / configure
+import google.generativeai as genai
 import json
 import time
 import math
@@ -15,9 +15,11 @@ import numpy as np
 import edge_tts
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+
 # Monkey-patch to fix MoviePy 1.0.3 compatibility with Pillow 10+
 if not hasattr(Image, "ANTIALIAS"):
     Image.ANTIALIAS = Image.LANCZOS
+
 from moviepy.editor import AudioFileClip, concatenate_videoclips, VideoFileClip
 from moviepy.video.VideoClip import VideoClip
 
@@ -355,13 +357,6 @@ def _mono_font(size):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _fit_to_canvas(img_pil: Image.Image, cw: int, ch: int) -> np.ndarray:
-    """
-    Fit any image into cw×ch without distortion or cropping faces.
-
-    Same-family ratios (L→L or P→P): scale-to-fill + centre crop.
-    Cross-family  (L→P or P→L):      scale-to-fit  + blurred darkened
-                                       background filling the bars.
-    """
     sw, sh = img_pil.size
     target_ratio = cw / ch
     src_ratio    = sw / sh
@@ -377,12 +372,10 @@ def _fit_to_canvas(img_pil: Image.Image, cw: int, ch: int) -> np.ndarray:
         y0 = (nh - ch) // 2
         return np.array(resized.crop((x0, y0, x0 + cw, y0 + ch)))
     else:
-        # Scale to fit inside canvas
         scale = min(cw / sw, ch / sh)
         nw, nh = int(sw * scale), int(sh * scale)
         resized = img_pil.resize((nw, nh), Image.LANCZOS)
 
-        # Build blurred darkened background
         bg_scale = max(cw / sw, ch / sh)
         bg_w = max(int(sw * bg_scale), cw)
         bg_h = max(int(sh * bg_scale), ch)
@@ -394,7 +387,6 @@ def _fit_to_canvas(img_pil: Image.Image, cw: int, ch: int) -> np.ndarray:
         bg_arr = (np.array(bg) * 0.30).astype(np.uint8)
         canvas = Image.fromarray(bg_arr)
 
-        # Paste sharp image centred
         px = (cw - nw) // 2
         py = (ch - nh) // 2
         canvas.paste(resized, (px, py))
@@ -402,12 +394,10 @@ def _fit_to_canvas(img_pil: Image.Image, cw: int, ch: int) -> np.ndarray:
 
 
 def _fetch_array(url: str, cw: int, ch: int) -> np.ndarray | None:
-    """Download an image and fit it to canvas dimensions."""
     try:
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         img = Image.open(BytesIO(resp.content)).convert("RGB")
-        # Validate minimum size
         if img.width < 100 or img.height < 100:
             return None
         return _fit_to_canvas(img, cw, ch)
@@ -420,19 +410,12 @@ def _fetch_array(url: str, cw: int, ch: int) -> np.ndarray | None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _openverse_image(query: str, page: int = 1) -> str | None:
-    """
-    Fetch a CC-licensed image from OpenVerse (WordPress Foundation).
-
-    OpenVerse aggregates Flickr CC, Wikimedia Commons, and other open
-    repositories. No API key required. Returns a direct image URL or None.
-    All results are commercially usable CC or public-domain images.
-    """
     try:
         r = requests.get(
             OPENVERSE_BASE,
             params={
                 "q":             query,
-                "license_type":  "commercial",   # CC0, CC BY, CC BY-SA only
+                "license_type":  "commercial",
                 "page_size":     5,
                 "page":          page,
             },
@@ -448,14 +431,6 @@ def _openverse_image(query: str, page: int = 1) -> str | None:
 
 
 def _wiki_image(query: str) -> str | None:
-    """
-    Fetch a Wikipedia article thumbnail.
-
-    Uses the Wikipedia REST summary API which returns the article's lead
-    image (poster for films, headshot for people, logo for companies,
-    diagram for concepts). No key required. Min 200×200 validation
-    filters out stub icons and tiny placeholders.
-    """
     try:
         slug = query.strip().replace(" ", "_")
         r = requests.get(WIKI_THUMB.format(slug), timeout=10).json()
@@ -471,10 +446,6 @@ def _wiki_image(query: str) -> str | None:
 
 
 def _wiki_image_multi(queries: list[str]) -> str | None:
-    """
-    Try multiple Wikipedia queries in order, return the first hit.
-    Useful for finding images when the exact article name is uncertain.
-    """
     for q in queries:
         url = _wiki_image(q)
         if url:
@@ -483,247 +454,15 @@ def _wiki_image_multi(queries: list[str]) -> str | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TRAILER DOWNLOAD & SEGMENTATION  (Film mode, yt-dlp)
+# UNIVERSAL TRAILER DOWNLOADER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _hd_trailers_slug(title: str) -> str:
-    """
-    Convert a film/series title to the slug format used by hd-trailers.net.
-    E.g. 'Dune: Part Two' -> 'dune-part-two'
-    """
-    slug = title.lower().strip()
-    slug = re.sub(r"[':!?,\.]", "", slug)
-    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
-    slug = re.sub(r"\s+", "-", slug)
-    slug = re.sub(r"-+", "-", slug).strip("-")
-    return slug
-
-
-def _parse_hd_trailers_page(html: str) -> str | None:
-    """
-    Parse an hd-trailers.net movie page and return the best Apple CDN
-    trailer URL (720p preferred, 480p fallback).
-
-    hd-trailers.net is an index site — the actual video files are served
-    directly from Apple's movietrailers.apple.com CDN with no auth or
-    bot-detection. This function extracts those direct URLs from the page.
-    """
-    try:
-        from bs4 import BeautifulSoup
-        import json as _json
-
-        soup = BeautifulSoup(html, "html.parser")
-
-        # Strategy 1: JSON-LD structured data (most reliable, always present)
-        for script in soup.find_all("script", type="application/ld+json"):
-            try:
-                data = _json.loads(script.string or "")
-                url  = (data.get("trailer") or {}).get("contentUrl", "")
-                if url and "movietrailers.apple.com" in url:
-                    return re.sub(r"h(1080|480)p", "h720p", url)
-            except Exception:
-                pass
-
-        # Strategy 2: quality-tagged table cells (720p → 1080p → 480p)
-        for quality in ("trailer-quality-720", "trailer-quality-1080",
-                        "trailer-quality-480"):
-            for td in soup.find_all("td", class_=quality):
-                a = td.find("a", href=re.compile(r"movietrailers\.apple\.com"))
-                if a:
-                    return a["href"]
-
-        # Strategy 3: any Apple CDN 720p link anywhere on the page
-        for a in soup.find_all(
-                "a", href=re.compile(r"movietrailers\.apple\.com.*h720p")):
-            return a["href"]
-
-    except Exception:
-        pass
-    return None
-
-
-def _download_apple_cdn(apple_url: str, out_path: str) -> bool:
-    """
-    Stream-download a direct Apple CDN .mov file to out_path.
-    Apple's CDN is unauthenticated, accepts Range requests, and is
-    reliable from any IP including cloud/datacenter ranges.
-    Returns True on success.
-    """
-    try:
-        hdrs = {
-            # QuickTime UA avoids the rare browser-check redirect Apple uses
-            "User-Agent": "QuickTime/7.7.3 (qtver=7.7.3;os=Windows NT 6.1)",
-        }
-        with requests.get(apple_url, headers=hdrs,
-                          stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(out_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1 << 19):  # 512 KB
-                    f.write(chunk)
-        return os.path.exists(out_path) and os.path.getsize(out_path) > 100_000
-    except Exception:
-        return False
-
-
-def _apple_trailers_xml(topic: str) -> str | None:
-    """
-    Fallback 2: search Apple's own XML feed for a trailer URL.
-
-    trailers.apple.com/trailers/home/xml/current.xml lists all trailers
-    Apple is currently promoting (~18 months of releases). It uses the same
-    Apple CDN as hd-trailers.net but is searchable by title directly —
-    useful for films that hd-trailers.net hasn't indexed yet (very new
-    releases) or where the slug guess didn't match.
-
-    The XML is ~500 KB; we cache it in a module-level dict for the process
-    lifetime so multiple lookup calls don't re-download it.
-    """
-    import difflib
-    import xml.etree.ElementTree as ET
-
-    XML_URL = "https://trailers.apple.com/trailers/home/xml/current.xml"
-
-    # Module-level cache: {url: xml_text}
-    cache = _apple_trailers_xml.__dict__.setdefault("_cache", {})
-    xml_text = cache.get(XML_URL)
-
-    if not xml_text:
-        try:
-            r = requests.get(
-                XML_URL,
-                headers={"User-Agent": "QuickTime/7.7.3"},
-                timeout=20,
-            )
-            r.raise_for_status()
-            xml_text = r.text
-            cache[XML_URL] = xml_text
-        except Exception:
-            return None
-
-    try:
-        root = ET.fromstring(xml_text)
-        topic_low = topic.lower()
-        best_url = None
-        best_score = 0.0
-
-        for movie in root.findall(".//movieinfo"):
-            title_el = movie.find("info/title")
-            if title_el is None or not title_el.text:
-                continue
-
-            score = difflib.SequenceMatcher(
-                None, topic_low, title_el.text.lower()
-            ).ratio()
-            if score < 0.60:
-                continue
-
-            # A more robust way to find the video URL
-            video_el = movie.find("video")
-            if video_el is not None:
-                for quality in ("hd720p", "hd1080p", "hd480p"):
-                    src_el = video_el.find(f'.//videosize[@type="{quality}"]/src')
-                    if src_el is not None and src_el.text and "movietrailers.apple.com" in src_el.text:
-                        if score > best_score:
-                            best_score = score
-                            best_url = src_el.text
-                        break  # found best quality for this title
-    except ET.ParseError:
-        return None
-    
-    return best_url
-
-
-
-def _internet_archive_trailer(topic: str) -> str | None:
-    """
-    Fallback 3: search Internet Archive for an official trailer.
-
-    Studios and film preservationists legally deposit trailers on
-    archive.org. It covers classic films, limited-release titles, and
-    anything pre-2006 that neither hd-trailers.net nor Apple's feed holds.
-    Direct download URLs require no auth and work from any IP.
-    """
-    try:
-        r = requests.get(
-            "https://archive.org/advancedsearch.php",
-            params={
-                "q": (
-                    f'title:("{topic}") AND '
-                    '(subject:"trailer" OR subject:"movie trailer") AND '
-                    "mediatype:movies"
-                ),
-                "fl[]": ["identifier", "title"],
-                "rows":  5,
-                "output": "json",
-            },
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=15,
-        )
-        r.raise_for_status()
-        docs = r.json().get("response", {}).get("docs", [])
-        if not docs:
-            return None
-
-        for doc in docs:
-            identifier = doc.get("identifier", "")
-            if not identifier:
-                continue
-            meta = requests.get(
-                f"https://archive.org/metadata/{identifier}",
-                timeout=10,
-            ).json()
-            files = meta.get("files", [])
-            # Prefer files with 'trailer' in the name, then any mp4/mov
-            for name_filter, exts in (
-                (lambda n: "trailer" in n, ("mp4", "mov")),
-                (lambda n: True,           ("mp4",)),
-            ):
-                for ext in exts:
-                    for f in files:
-                        fname = f.get("name", "")
-                        if fname.lower().endswith(f".{ext}") and \
-                                name_filter(fname.lower()):
-                            return (
-                                f"https://archive.org/download/"
-                                f"{identifier}/{fname}"
-                            )
-    except Exception:
-        pass
-    return None
-
-def _imdb_trailer_url(topic: str) -> str | None:
-    try:
-        import yt_dlp
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "extract_flat": True  # Only read titles, don't download yet
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            # Fetch the top 5 results instead of blindly taking the 1st
-            search_query = f'ytsearch5:"{topic}" official movie trailer'
-            info = ydl.extract_info(search_query, download=False)
-            
-            if info and info.get("entries"):
-                for entry in info["entries"]:
-                    title = entry.get("title", "").lower()
-                    
-                    # Actively filter out the VR Game and Interview videos
-                    bad_words = ["game", "vr", "mixed reality", "fanfest", "interview", "react", "panel"]
-                    if any(word in title for word in bad_words):
-                        continue # Skip the game promo and check the next video!
-                        
-                    return entry.get("url") # Returns the first clean cinematic trailer
-    except Exception:
-        pass
-    return None
-
-
-def _download_imdb_trailer(imdb_video_url: str, out_path: str) -> bool:
+def _download_custom_video(video_url: str, out_path: str) -> bool:
+    """Downloads a video from almost any site (IMDb, YouTube, etc.) using yt-dlp."""
     try:
         import yt_dlp
         
-        # Force delete the old file so yt-dlp doesn't silently skip
+        # Kill the phantom cache: force delete the old file
         if os.path.exists(out_path):
             try: os.remove(out_path)
             except: pass
@@ -734,126 +473,16 @@ def _download_imdb_trailer(imdb_video_url: str, out_path: str) -> bool:
             "quiet":               True,
             "no_warnings":         True,
             "merge_output_format": "mp4",
-            "retries":             5,
-            "socket_timeout":      30,
-            "overwrites":          True, # Force yt-dlp to overwrite
+            "overwrites":          True,  # Force overwrite
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([imdb_video_url])
+            ydl.download([video_url])
+            
         return os.path.exists(out_path) and os.path.getsize(out_path) > 100_000
-    except Exception:
+    except Exception as e:
+        st.error(f"Download failed: {e}")
         return False
 
-
-def _download_trailer(topic: str) -> str | None:
-    """
-    Download the official trailer for a film/series at up to 720p.
-
-    Four-source fallback chain — all sources are auth-free, key-free,
-    and work from any server IP including Streamlit Cloud's AWS ranges:
-
-      1. hd-trailers.net → Apple CDN          (2006-present, fast)
-      2. Apple Trailers XML feed → Apple CDN  (~18 months, fuzzy match)
-      3. IMDb → Amazon CloudFront CDN         (near-universal, key-free)
-      4. Internet Archive → direct MP4        (classics, pre-2006, niche)
-      5. None → TMDB stills + Pexels B-roll   (caller's guaranteed fallback)
-
-    Caches in /tmp. Returns path to .mov/.mp4 or None.
-    """
-    safe_name = re.sub(r"[^a-z0-9]", "_", topic.lower())
-    out_path  = os.path.join(tempfile.gettempdir(), f"trailer_{safe_name}.mov")
-    out_path_mp4 = out_path.replace(".mov", ".mp4")
-    out_path_archive = out_path.replace(".mov", "_archive.mp4")
-
-    # Check ALL possible cached extensions, not just .mov
-    for p in [out_path, out_path_mp4, out_path_archive]:
-        if os.path.exists(p):
-            if os.path.getsize(p) > 100_000 and _verify_trailer(p):
-                return p
-            os.remove(p)
-
-    # ── Source 1: hd-trailers.net ─────────────────────────────────────────────
-    try:
-        slug = _hd_trailers_slug(topic)
-        r    = requests.get(
-            f"https://www.hd-trailers.net/movie/{slug}/",
-            headers={"User-Agent": "Mozilla/5.0 (compatible; SudoVid/1.0)"},
-            timeout=15,
-        )
-        if r.status_code == 200:
-            apple_url = _parse_hd_trailers_page(r.text)
-            if apple_url and _download_apple_cdn(apple_url, out_path):
-                return out_path
-    except Exception:
-        pass
-
-    # ── Source 2: Apple Trailers XML feed ────────────────────────────────────
-    try:
-        apple_url = _apple_trailers_xml(topic)
-        if apple_url and _download_apple_cdn(apple_url, out_path):
-            return out_path
-    except Exception:
-        pass
-
-    # ── Source 3: IMDb → Amazon CloudFront CDN ───────────────────────────────
-    try:
-        imdb_url = _imdb_trailer_url(topic)
-        if imdb_url:
-            out_path_mp4 = out_path.replace(".mov", ".mp4")
-            if _download_imdb_trailer(imdb_url, out_path_mp4):
-                return out_path_mp4
-    except Exception:
-        pass
-
-    # ── Source 4: Internet Archive ───────────────────────────────────────────
-    try:
-        archive_url = _internet_archive_trailer(topic)
-        if archive_url:
-            out_path_mp4 = out_path.replace(".mov", "_archive.mp4")
-            if _download_apple_cdn(archive_url, out_path_mp4):
-                return out_path_mp4
-    except Exception:
-        pass
-
-    return None
-
-
-def _extract_trailer_segments(video_path: str,
-                               num_segments: int = 6,
-                               seg_duration: float = 8.0) -> list:
-    """
-    Return list of (start_sec, end_sec) evenly spread across the trailer,
-    skipping the first 2s (logo) and last 5s (release date slate).
-    """
-    try:
-        vc = VideoFileClip(video_path)
-        total = vc.duration
-        vc.close()
-        usable_start = 2.0
-        usable_end   = max(usable_start + seg_duration, total - 5.0)
-        usable_range = usable_end - usable_start - seg_duration
-        if usable_range <= 0:
-            return []
-        step = usable_range / max(num_segments - 1, 1)
-        segs = []
-        for i in range(num_segments):
-            start = usable_start + i * step
-            end   = min(start + seg_duration, usable_end)
-            if end - start >= 3.0:
-                segs.append((round(start, 1), round(end, 1)))
-        return segs
-    except Exception:
-        return []
-
-def _verify_trailer(path: str) -> bool:
-    """Return True only if the file can be opened by MoviePy."""
-    try:
-        vc = VideoFileClip(path)
-        ok = vc.duration > 0
-        vc.close()
-        return ok
-    except Exception:
-        return False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CREDIT OVERLAY
@@ -863,11 +492,6 @@ def _add_credit_overlay(frame_arr: np.ndarray,
                          credit_text: str,
                          is_shorts: bool,
                          cw: int, ch: int) -> np.ndarray:
-    """
-    Composite credit text onto a video frame.
-    Shorts  → top centre, white text on semi-transparent pill
-    Long    → bottom left, small white text, no background
-    """
     if not credit_text:
         return frame_arr
     img  = Image.fromarray(frame_arr.astype(np.uint8)).convert("RGBA")
@@ -899,7 +523,7 @@ def _add_credit_overlay(frame_arr: np.ndarray,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CARD GENERATORS  — all accept cw, ch for canvas-aware sizing
+# CARD GENERATORS
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _accent_for_mode(mode):
@@ -921,7 +545,10 @@ def make_text_card(line1, line2="", label="", mode=MODE_FILM, cw=1280, ch=720):
     accent = _accent_for_mode(mode)
     img, draw = _base_card(accent, cw, ch)
     cy = ch // 2
-    scale = cw / 1280
+    
+    # Scale text by width to prevent cutoffs on Shorts
+    scale = cw / 1280 
+    
     if label:
         draw.text((cw // 2, cy - int(100 * scale)), label.upper(),
                   font=_font(max(16, int(22 * scale))), fill=accent, anchor="mm")
@@ -938,7 +565,9 @@ def make_text_card(line1, line2="", label="", mode=MODE_FILM, cw=1280, ch=720):
 def make_chapter_card(chapter_num, title, mode=MODE_FILM, cw=1280, ch=720):
     accent = _accent_for_mode(mode)
     img, draw = _base_card(accent, cw, ch)
-    scale = cw / 1280
+    
+    scale = cw / 1280 
+    
     draw.text((cw - int(60 * scale), ch - int(40 * scale)), f"#{chapter_num}",
               font=_font(max(48, int(96 * scale)), bold=True),
               fill=(*accent, 30), anchor="rb")
@@ -954,7 +583,9 @@ def make_chapter_card(chapter_num, title, mode=MODE_FILM, cw=1280, ch=720):
 def make_stat_card(stat, description, mode=MODE_TECH, cw=1280, ch=720):
     accent = _accent_for_mode(mode)
     img, draw = _base_card(accent, cw, ch)
-    scale = cw / 1280
+    
+    scale = cw / 1280 
+    
     draw.text((cw // 2, ch // 2 - int(60 * scale)), stat,
               font=_font(max(48, int(110 * scale)), bold=True),
               fill=_TEXT_HI, anchor="mm")
@@ -966,7 +597,9 @@ def make_stat_card(stat, description, mode=MODE_TECH, cw=1280, ch=720):
 def make_code_card(snippet, language="", cw=1280, ch=720):
     img  = Image.new("RGB", (cw, ch), (18, 20, 30))
     draw = ImageDraw.Draw(img)
-    scale = cw / 1280
+    
+    scale = cw / 1280 
+    
     header_h = int(44 * scale)
     draw.rectangle([(0, 0), (cw, header_h)], fill=(30, 32, 44))
     dot_r = int(7 * scale)
@@ -1001,7 +634,7 @@ def make_code_card(snippet, language="", cw=1280, ch=720):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _zoom_clip(arr: np.ndarray, duration: float, zoom_in: bool = True):
-    pil = Image.fromarray(arr.astype(np.uint8))   # ensure input is uint8
+    pil = Image.fromarray(arr.astype(np.uint8))
     h0, w0 = arr.shape[:2]
 
     def make_frame(t):
@@ -1011,7 +644,7 @@ def _zoom_clip(arr: np.ndarray, duration: float, zoom_in: bool = True):
         res    = np.array(pil.resize((nw, nh), Image.BILINEAR))
         x0_    = (nw - w0) // 2
         y0_    = (nh - h0) // 2
-        return res[y0_:y0_ + h0, x0_:x0_ + w0].astype(np.float64)  # ← fix
+        return res[y0_:y0_ + h0, x0_:x0_ + w0].astype(np.float64)
 
     return VideoClip(make_frame, duration=duration)
 
@@ -1288,17 +921,6 @@ def _resolve_clip(shot, mode,
                   trailer_idx: list,
                   cw: int, ch: int,
                   is_shorts: bool):
-    """
-    Resolve one shot dict to (visual, credit_str).
-    visual     → ndarray (still) or VideoFileClip (trailer segment)
-    credit_str → attribution string for this clip, or "" for generated cards
-
-    All image sources are key-free and CC/public-domain licensed:
-      trailer_clip  → Apple/IMDb CDN (official trailer)
-      wiki_image    → Wikipedia (posters, cast, logos, diagrams)
-      openverse     → OpenVerse CC pool (B-roll, atmospherics)
-      *_card        → generated locally (no external source)
-    """
     stype       = shot.get("type", "text_card")
     arr         = None
     clip_credit = ""
@@ -1313,46 +935,10 @@ def _resolve_clip(shot, mode,
 
     # ── TRAILER CLIP ─────────────────────────────────────────────────────────
     if stype == "trailer_clip":
-        if trailer_path and trailer_segs:
-            idx  = trailer_idx[0] % len(trailer_segs)
-            s, e = trailer_segs[idx]
-            trailer_idx[0] += 1
-            try:
-                vc = VideoFileClip(trailer_path).subclip(s, e)
-                if vc.w != cw or vc.h != ch:
-                    src_ratio = vc.w / vc.h
-                    tgt_ratio = cw / ch
-                    both_l = src_ratio >= 1.0 and tgt_ratio >= 1.0
-                    both_p = src_ratio <  1.0 and tgt_ratio <  1.0
-                    if both_l or both_p:
-                        scale = max(cw / vc.w, ch / vc.h)
-                        vc = vc.resize(scale).crop(x_center=vc.w*scale/2,
-                                                   y_center=vc.h*scale/2,
-                                                   width=cw, height=ch)
-                    else:
-                        scale = min(cw / vc.w, ch / vc.h)
-                        vc_r  = vc.resize(scale)
-                        bg_arr = _fit_to_canvas(
-                            Image.fromarray(vc.get_frame(0)), cw, ch)
-                        bg_clip = VideoClip(lambda t, b=bg_arr: b,
-                                            duration=vc.duration)
-                        from moviepy.editor import CompositeVideoClip
-                        ox = (cw - vc_r.w) // 2
-                        oy = (ch - vc_r.h) // 2
-                        vc = CompositeVideoClip(
-                            [bg_clip, vc_r.set_position((ox, oy))],
-                            size=(cw, ch))
-                clip_credit = f"Courtesy: {topic} Official Trailer"
-                return vc, clip_credit
-            except Exception:
-                stype = "tmdb_backdrop"
-                pass  # fall through to stills
+        stype = "tmdb_backdrop" # Safely forces fallback if called
 
-    # ── WIKI IMAGE (poster, cast, backdrop, logo, diagram) ───────────────────
-    # Handles: tmdb_poster, tmdb_backdrop, tmdb_cast, wiki_image
-    # All resolved through Wikipedia's REST API — key-free, CC/public-domain.
-    elif stype in ("wiki_image", "tmdb_poster", "tmdb_backdrop", "tmdb_cast"):
-        # Build a prioritised list of queries depending on shot type
+    # ── WIKI IMAGE ───────────────────────────────────────────────────────────
+    if stype in ("wiki_image", "tmdb_poster", "tmdb_backdrop", "tmdb_cast"):
         if stype == "tmdb_poster":
             queries = [topic, f"{topic} film", f"{topic} poster"]
         elif stype == "tmdb_backdrop":
@@ -1368,8 +954,7 @@ def _resolve_clip(shot, mode,
         if arr is not None:
             clip_credit = "Images courtesy: Wikipedia / Wikimedia Commons"
 
-    # ── OPENVERSE B-ROLL (replaces pexels_broll) ─────────────────────────────
-    # CC-licensed images from OpenVerse — no key required.
+    # ── OPENVERSE B-ROLL ─────────────────────────────────────────────────────
     elif stype in ("pexels_broll", "openverse_image"):
         query = (shot.get("pexels_query")
                  or shot.get("image_query")
@@ -1406,18 +991,15 @@ def _resolve_clip(shot, mode,
 
     # ── FALLBACK CHAIN ───────────────────────────────────────────────────────
     if arr is None:
-        # 1. OpenVerse search on the topic
         url = _openverse_image(topic + " cinematic")
         arr = _fetch_unique(url)
         if arr is not None:
             clip_credit = "Images courtesy: OpenVerse (CC licensed)"
-        # 2. Wikipedia image on the topic
         if arr is None:
             url = _wiki_image(topic)
             arr = _fetch_unique(url)
             if arr is not None:
                 clip_credit = "Images courtesy: Wikipedia / Wikimedia Commons"
-        # 3. Generated text card (always succeeds)
         if arr is None:
             arr = make_text_card(shot.get("note", topic), mode=mode, cw=cw, ch=ch)
             clip_credit = ""
@@ -1436,65 +1018,50 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
         cw, ch = _canvas(is_shorts)
         audio = AudioFileClip(audio_path)
 
-        # ── FILM MODE: Simplified Trailer-Only Approach ───────────────────────────
-        if mode == MODE_FILM:
-            if trailer_path and os.path.exists(trailer_path):
-                _write_progress(10, "Using pre-fetched trailer...")
+        # ── FILM MODE: Direct Trailer Assembly ───────────────────────────
+        if mode == MODE_FILM and trailer_path and os.path.exists(trailer_path):
+            _write_progress(20, "Formatting custom trailer to fit screen...")
+            video = VideoFileClip(trailer_path)
+
+            if video.duration < audio.duration:
+                from moviepy.video.fx.all import loop
+                video = video.fx(loop, duration=audio.duration)
             else:
-                _write_progress(10, "Searching for official trailer...")
-                trailer_path = _download_trailer(topic)
+                start_time = 2.0 if video.duration > (audio.duration + 2.0) else 0.0
+                video = video.subclip(start_time, start_time + audio.duration)
 
-            if trailer_path:
-                _write_progress(40, "Formatting trailer to fit screen...")
-                video = VideoFileClip(trailer_path)
+            scale = max(cw / video.w, ch / video.h)
+            video = (video.resize(scale)
+                          .crop(x_center=video.w * scale / 2,
+                                y_center=video.h * scale / 2,
+                                width=cw, height=ch))
 
-                # 1. Trim or loop the video to match the audio exactly
-                if video.duration < audio.duration:
-                    from moviepy.video.fx.all import loop
-                    video = video.fx(loop, duration=audio.duration)
-                else:
-                    # Safely skip the first 2 seconds (usually studio logos)
-                    start_time = 2.0 if video.duration > (audio.duration + 2.0) else 0.0
-                    video = video.subclip(start_time, start_time + audio.duration)
-
-                # 2. Crop it perfectly to fill the canvas (e.g. 9:16 for Shorts)
-                scale = max(cw / video.w, ch / video.h)
-                video = (video.resize(scale)
-                              .crop(x_center=video.w * scale / 2,
-                                    y_center=video.h * scale / 2,
-                                    width=cw, height=ch))
-
-                _assembled = video.set_audio(audio)
-                
-                # 3. Add the credit overlay
-                _write_progress(70, "Adding credit overlay...")
-                credit_text = credit_override or f"Courtesy: {topic} Official Trailer"
-                
-                def _overlay_frame(t):
-                    f = _assembled.get_frame(t)
-                    return _add_credit_overlay(f, credit_text, is_shorts, cw, ch)
-
-                final = VideoClip(_overlay_frame, duration=_assembled.duration).set_audio(audio)
-
-                _write_progress(85, "Rendering final MP4 (this takes ~60s)...")
-                final.write_videofile(
-                    output_path, fps=FPS, codec="libx264",
-                    audio_codec="aac", preset="ultrafast",
-                    threads=2, logger=None,
-                )
-                _write_progress(100, "Done!", done=True)
-                
-                # Clean up MoviePy objects to free memory
-                video.close()
-                audio.close()
-                final.close()
-                return  # Exit early, we're completely done!
+            _assembled = video.set_audio(audio)
             
-            else:
-                _write_progress(15, "Trailer not found — falling back to stills")
+            _write_progress(70, "Adding credit overlay...")
+            credit_text = credit_override or f"Courtesy: {topic}"
+            
+            def _overlay_frame(t):
+                f = _assembled.get_frame(t)
+                return _add_credit_overlay(f, credit_text, is_shorts, cw, ch)
+
+            final = VideoClip(_overlay_frame, duration=_assembled.duration).set_audio(audio)
+
+            _write_progress(85, "Rendering final MP4 (this takes ~60s)...")
+            final.write_videofile(
+                output_path, fps=FPS, codec="libx264",
+                audio_codec="aac", preset="ultrafast",
+                threads=2, logger=None,
+            )
+            _write_progress(100, "Done!", done=True)
+            
+            video.close()
+            audio.close()
+            final.close()
+            return
 
         # ─────────────────────────────────────────────────────────────────────────────
-        # ORIGINAL LOGIC: Kept intact for Tech/Edu modes (or if trailer fails)
+        # ORIGINAL LOGIC: Kept intact for Tech/Edu modes (or if no trailer URL provided)
         # ─────────────────────────────────────────────────────────────────────────────
         
         trailer_segs = trailer_segs or []
@@ -1591,7 +1158,6 @@ st.caption("AI-Powered Script, Voice & Video Engine")
 # KEY RESOLUTION  — secrets take priority; UI inputs are the fallback
 # ─────────────────────────────────────────────────────────────────────────────
 def _secret(key: str) -> str:
-    """Return st.secrets[key] if it exists, else empty string."""
     try:
         return st.secrets[key]
     except Exception:
@@ -1923,7 +1489,7 @@ with tab6:
     override_on = st.checkbox(
         "✏️ Override automatic credits",
         value=False,
-        help="By default credits are set automatically per clip source (trailer, Wikipedia, OpenVerse). Enable this to write your own single credit line for the whole video.")
+        help="By default credits are set automatically per clip source. Enable this to write your own single credit line for the whole video.")
     credit_override = ""
     if override_on:
         credit_override = st.text_input(
@@ -1931,7 +1497,7 @@ with tab6:
             value=f"Courtesy: {topic_val}" if topic_val else "Courtesy: Studio Name",
             help="Shorts: top centre white pill. Long format: bottom left small white text.")
     else:
-        st.caption("🤖 Credits set automatically per clip — trailer, Wikipedia, or OpenVerse CC.")
+        st.caption("🤖 Credits set automatically per clip.")
 
     st.markdown("---")
 
@@ -1954,27 +1520,52 @@ with tab6:
             st.warning(m)
     else:
         if mode == MODE_FILM:
-            st.caption(
-                "ℹ️ Trailers sourced from **hd-trailers.net → Apple CDN**, "
-                "**Apple Trailers XML**, **IMDb**, and **Internet Archive** — "
-                "no API keys, no login required."
+            st.caption("ℹ️ Paste a direct video link below, or leave it blank to have the AI search for the official trailer.")
+            
+            custom_trailer_url = st.text_input(
+                "🔗 Exact Trailer URL",
+                placeholder="Leave blank to auto-search, or paste a YouTube/IMDb link...",
             )
-            if st.button("🎞️ Pre-fetch Trailer (optional but recommended)"):
-                with st.spinner(f"Fetching {topic_val} trailer…"):
-                    tp = _download_trailer(topic_val)
-                    if tp:
-                        segs = _extract_trailer_segments(tp)
-                        st.session_state["trailer_path"] = tp
-                        st.session_state["trailer_segs"] = segs
-                        st.success(f"✅ Trailer ready — {len(segs)} segments available")
-                    else:
-                        st.session_state["trailer_path"] = None
-                        st.session_state["trailer_segs"] = []
-                        st.warning(
-                            "Trailer not found across all four sources. "
-                            "Assembly will use Wikipedia images and OpenVerse "
-                            "CC B-roll instead — the video will still complete."
+            
+            if st.button("🎞️ Fetch Trailer"):
+                with st.spinner("Preparing trailer…"):
+                    safe_name = re.sub(r"[^a-z0-9]", "_", topic_val.lower())
+                    tp = os.path.join(tempfile.gettempdir(), f"trailer_{safe_name}_custom.mp4")
+                    
+                    target_url = custom_trailer_url.strip()
+                    
+                    # THE BRILLIANT FIX: Use Gemini to find the URL if the user didn't provide one
+                    if not target_url:
+                        st.info("🤖 Asking AI to find the official theatrical trailer...")
+                        
+                        search_prompt = f"""
+                        Search the web for the OFFICIAL cinematic theatrical movie trailer for "{topic_val}".
+                        You must find the exact YouTube or IMDb video URL.
+                        CRITICAL: Exclude all video games, VR experiences, interviews, fan reactions, and IGN FanFests.
+                        Return ONLY the raw URL as plain text. Do not add any conversational text or markdown formatting.
+                        """
+                        
+                        target_url = call_gemini(
+                            api_key=api_key, 
+                            prompt=search_prompt, 
+                            system_instruction="You are a strict URL-finding bot. Output ONLY a valid http/https URL.", 
+                            use_search=True
                         )
+                        
+                        if target_url and target_url.strip().startswith("http"):
+                            st.success(f"🔍 AI found trailer: {target_url.strip()}")
+                        else:
+                            st.error("❌ AI could not confidently find a trailer URL. Please paste one manually.")
+                            target_url = None
+
+                    # Proceed to download the URL (whether provided manually or found by AI)
+                    if target_url:
+                        if _download_custom_video(target_url.strip(), tp):
+                            st.session_state["trailer_path"] = tp
+                            st.success("✅ Trailer downloaded successfully! You can now Start Video Assembly.")
+                        else:
+                            st.session_state["trailer_path"] = None
+                            st.error("❌ Failed to download the video. YouTube may have blocked the connection. Try pasting an IMDb link.")
 
         # Shot list
         if st.button("🎬 Generate Shot List"):
@@ -1991,10 +1582,10 @@ with tab6:
             type_icons = {
                 "trailer_clip":    "🎬",
                 "wiki_image":      "📖",
-                "tmdb_poster":     "🖼️",   # handled by wiki_image internally
-                "tmdb_backdrop":   "🎞️",   # handled by wiki_image internally
-                "tmdb_cast":       "👤",   # handled by wiki_image internally
-                "pexels_broll":    "🌆",   # handled by openverse internally
+                "tmdb_poster":     "🖼️",
+                "tmdb_backdrop":   "🎞️",
+                "tmdb_cast":       "👤",
+                "pexels_broll":    "🌆",
                 "openverse_image": "🌆",
                 "text_card":       "📝",
                 "stat_card":       "📊",
@@ -2036,7 +1627,7 @@ with tab6:
                             is_shorts       = is_shorts,
                             credit_override = credit_override,
                             trailer_path    = st.session_state.get("trailer_path"),
-                            trailer_segs    = st.session_state.get("trailer_segs"),
+                            trailer_segs    = [], # Segments removed; gracefully bypass
                         ),
                         daemon=True,
                     )

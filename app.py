@@ -1250,14 +1250,6 @@ audio {
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPER: step-complete banner (reused across tabs)
 # ─────────────────────────────────────────────────────────────────────────────
- 
-(tab1, tab2, tab3, tab4, tab5) = st.tabs([
-    "1. Parameters",
-    "2. Research & Script",
-    "3. Voiceover",
-    "4. Video Assembly",
-    "5. Content Bundle",
-])
 
 def _complete_banner(message: str, next_tab: str | None = None) -> None:
     """Render a green completion banner with an optional next-step label."""
@@ -3344,6 +3336,9 @@ def _render_hero():
         '</div>',
         unsafe_allow_html=True,
     )
+ 
+ 
+_render_hero()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -3509,6 +3504,19 @@ with st.sidebar:
 _active_tab = st.session_state.get("_active_tab", 0)
 # Reset it immediately so subsequent reruns don't force the tab again
 st.session_state["_active_tab"] = 0
+
+st.markdown(
+    '<div class="sv-hero">'
+    '<div class="sv-hero-left">'
+    '<div class="sv-hero-icon">🎬</div>'
+    '<div class="sv-hero-text">'
+    '<span class="sv-hero-title">SudoVid</span>'
+    '<span class="sv-hero-sub">AI-powered script, voice &amp; video engine</span>'
+    '</div>'
+    '</div>'
+    '</div>',
+    unsafe_allow_html=True,
+)
 
 (tab1, tab2, tab3, tab4, tab5) = st.tabs(
     [

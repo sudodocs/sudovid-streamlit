@@ -337,15 +337,19 @@ div[data-baseweb="notification"][kind="info"] {
 }
 
 /* ── SPINNER / PROGRESS ──────────────────────────────────────────────────── */
+/* Fill bar — bright blue, smooth transition */
 [data-testid="stProgress"] > div > div {
     background-color: var(--sv-blue) !important;
     border-radius: 99px !important;
     transition: width 0.4s ease !important;
 }
+/* Track — transparent background, dark-blue outline so fill is always visible */
 [data-testid="stProgress"] > div {
-    background-color: var(--sv-border) !important;
+    background-color: transparent !important;
+    border: 2px solid var(--sv-blue-dark) !important;
     border-radius: 99px !important;
-    height: 6px !important;
+    height: 8px !important;          /* slightly taller so the border reads clearly */
+    box-sizing: border-box !important;
 }
 
 /* ── SIDEBAR ─────────────────────────────────────────────────────────────── */
@@ -1216,26 +1220,6 @@ audio {
     background-color: var(--sv-blue-dim) !important;
 }
 
-/* ── FIX SLIDER TEXT CONTRAST (Tuning Matrix) ──────────────────────────── */
-/* Target the inactive text */
-[data-testid="stTickBar"] div {
-    color: var(--sv-text-2) !important;
-}
-
-/* Target the active text container to give it the blue bubble */
-[data-testid="stTickBar"] div[style*="font-weight"] {
-    background-color: var(--sv-blue) !important;
-    padding: 2px 8px !important;
-    border-radius: 4px !important;
-}
-
-/* NUCLEAR OVERRIDE: Force the text inside the active bubble to be white */
-[data-testid="stTickBar"] div[style*="font-weight"],
-[data-testid="stTickBar"] div[style*="font-weight"] * {
-    color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important; 
-}
-
 /* ── PROGRESS BAR TEXT FIX (Issue 5) ───────────────────────────────────── */
 [data-testid="stProgress"] p { display: none !important; }
 .sv-prog-label-text {
@@ -1810,30 +1794,73 @@ def generate_script_package(mode, topic, research, angle, matrix,
         return {"error": f"Synthesis failed. Error: {str(e)}", "raw": result}
 
 
-def generate_youtube_bundle(api_key, script_text):
-    prompt = f"""
-    Analyse this YouTube script and create a complete SEO and packaging bundle.
-
-    SCRIPT:
-    {script_text}
-
-    JSON SCHEMA:
-    {{
-        "viral_title": "String",
-        "description": "String",
-        "tags": ["tag1", "tag2"],
-        "hashtags": ["#tag1", "#tag2"],
-        "thumbnail_prompt": "String"
-    }}
+def generate_youtube_bundle(api_key: str, script_text: str) -> dict:
     """
-    result = call_gemini(api_key, prompt,
-                         "You are a master YouTube strategist and SEO expert.",
-                         is_json=True)
+    Generate a YouTube content bundle (title, description, tags, hashtags,
+    thumbnail prompt) from the provided script text.
+
+    Sanitises the script before embedding to prevent JSON parse failures caused
+    by unescaped quotes, curly braces, or stray newlines inside f-string
+    interpolation.
+    """
+    # ── Sanitise the script text so it embeds safely inside a prompt ─────────
+    safe_script = (
+        script_text
+        .replace("\\", "\\\\")   # escape existing backslashes first
+        .replace('"',  '\\"')    # escape double-quotes
+        .replace("\r\n", " ")    # normalise Windows line endings
+        .replace("\n",  " ")     # collapse newlines → spaces (no multi-line strings in JSON)
+        .replace("\t",  " ")     # tabs → spaces
+        .strip()
+    )
+
+    prompt = f"""Analyse this YouTube script and return ONLY a valid JSON object.
+Do NOT include any text before or after the JSON.
+Do NOT use markdown code fences.
+All string values must be on a single line — no embedded newlines.
+
+SCRIPT:
+{safe_script}
+
+Return this exact JSON structure with all fields populated:
+{{
+    "viral_title": "high-CTR YouTube title here",
+    "description": "full video description here",
+    "tags": ["tag1", "tag2", "tag3"],
+    "hashtags": ["#hashtag1", "#hashtag2"],
+    "thumbnail_prompt": "detailed AI image generation prompt here"
+}}"""
+
+    system = (
+        "You are a master YouTube strategist and SEO expert. "
+        "You output ONLY raw JSON — no preamble, no markdown, no explanation."
+    )
+    result = call_gemini(api_key, prompt, system, is_json=True)
+
+    # ── Robust parse with multiple fallback strategies ────────────────────────
     try:
+        # Strategy 1: direct parse after stripping fences
         clean = result.replace("```json", "").replace("```", "").strip()
         return json.loads(clean)
-    except Exception as e:
-        return {"error": f"Failed to generate bundle. Error: {str(e)}", "raw": result}
+    except Exception:
+        pass
+
+    try:
+        # Strategy 2: extract the first {...} block in the response
+        match = re.search(r"\{[\s\S]*\}", result)
+        if match:
+            return json.loads(match.group())
+    except Exception:
+        pass
+
+    # Strategy 3: return raw text so the UI can still display something
+    return {
+        "error": (
+            "Bundle generated but JSON could not be parsed. "
+            "Raw output preserved below — copy the fields manually."
+        ),
+        "raw": result,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2853,16 +2880,15 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
     """
     Build a KDEnlive 22+ project ZIP in memory.
 
-    Structure:
+    FIXES vs original:
+      1. Added 'kdenlive:version' attribute to <mlt> root — fixes "Version cannot be read".
+      2. Playlists are built BEFORE the tractor that references them — fixes "no tracks".
+
+    Structure inside ZIP:
         {topic}.kdenlive   — MLT XML referencing ./media/... (relative paths)
         media/
             voiceover.mp3
-            000_clip.mp4 / 000_clip.png
-            001_clip.jpg
-            ...
-
-    Returns ZIP bytes or None on failure.
-    MLT XML targets KDEnlive 22+ (mlt version 7.x, kdenlive namespace).
+            000_clip.mp4 / 000_clip.png  ...
     """
     import zipfile
     import xml.etree.ElementTree as ET
@@ -2884,12 +2910,10 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
     safe_topic = re.sub(r"[^a-zA-Z0-9_-]", "_", topic)[:40]
 
     # ── Collect media files ───────────────────────────────────────────────────
-    # media_items: list of { "arc_name": str, "src_path": str, "kind": str }
     media_items = []
-    seen_paths  = {}   # src_path → arc_name (dedup sources used in multiple shots)
+    seen_paths  = {}
 
     def _add_media(src_path: str, kind: str, idx: int, label: str) -> str:
-        """Register a media file; return its archive name inside media/."""
         if not src_path or not os.path.exists(src_path):
             return ""
         if src_path in seen_paths:
@@ -2906,7 +2930,6 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
         arc = _add_media(c["path"], c["media_kind"], c["index"], c["label"])
         clip_arc_names.append(arc)
 
-    # Voiceover
     audio_arc = ""
     if audio_path and os.path.exists(audio_path):
         ext       = os.path.splitext(audio_path)[1] or ".mp3"
@@ -2914,31 +2937,32 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
         media_items.append({"arc_name": audio_arc, "src_path": audio_path, "kind": "audio"})
 
     # ── Build MLT XML ─────────────────────────────────────────────────────────
-    # KDEnlive 22+ wraps standard MLT XML with its own namespace attributes.
+    # FIX B: include 'kdenlive:version' so KDEnlive 22+ accepts the file.
     mlt = ET.Element("mlt", {
-        "LC_ALL":   "en_US.UTF-8",
-        "version":  "7.22.0",
-        "root":     ".",
-        "producer": "main_bin",
+        "LC_ALL":             "en_US.UTF-8",
+        "version":            "7.22.0",
+        "kdenlive:version":   "22.12.3",   # ← NEW: fixes "version cannot be read"
+        "root":               ".",
+        "producer":           "main_bin",
     })
 
     # Profile
     ET.SubElement(mlt, "profile", {
-        "description":    f"{'HD 1080p 24fps' if not is_shorts else 'Vertical 1080x1920 24fps'}",
-        "width":          str(cw),
-        "height":         str(ch),
-        "progressive":    "1",
-        "sample_aspect_num": "1",
-        "sample_aspect_den": "1",
+        "description":        "HD 1080p 24fps" if not is_shorts else "Vertical 1080x1920 24fps",
+        "width":              str(cw),
+        "height":             str(ch),
+        "progressive":        "1",
+        "sample_aspect_num":  "1",
+        "sample_aspect_den":  "1",
         "display_aspect_num": str(cw),
         "display_aspect_den": str(ch),
-        "frame_rate_num": str(fps),
-        "frame_rate_den": "1",
-        "colorspace":     "709",
+        "frame_rate_num":     str(fps),
+        "frame_rate_den":     "1",
+        "colorspace":         "709",
     })
 
-    # ── Producers (one per unique media file) ─────────────────────────────────
-    producer_ids = {}   # arc_name → producer id string
+    # ── Producers ─────────────────────────────────────────────────────────────
+    producer_ids = {}
 
     # Black background producer (KDEnlive mandatory)
     black = ET.SubElement(mlt, "producer", {"id": "black_track", "in": "0", "out": "999999"})
@@ -2948,31 +2972,26 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
 
     for mi in media_items:
         if mi["kind"] == "audio":
-            continue   # audio handled separately below
+            continue
         pid  = f"producer_{len(producer_ids):04d}"
         kind = mi["kind"]
         arc  = mi["arc_name"]
         producer_ids[arc] = pid
 
-        # Total frames for the out point — use a large sentinel for images
         if kind == "video":
             try:
-                vc   = VideoFileClip(mi["src_path"])
-                dur  = vc.duration
+                vc  = VideoFileClip(mi["src_path"])
+                dur = vc.duration
                 vc.close()
             except Exception:
                 dur = 30.0
             out_frame = max(0, _frames(dur, fps) - 1)
         else:
-            out_frame = 999999   # images: KDEnlive treats as infinite
+            out_frame = 999999
 
-        prod = ET.SubElement(mlt, "producer", {
-            "id":  pid,
-            "in":  "0",
-            "out": str(out_frame),
-        })
-        ET.SubElement(prod, "property", {"name": "resource"}).text     = f"./{arc}"
-        ET.SubElement(prod, "property", {"name": "mlt_service"}).text  = (
+        prod = ET.SubElement(mlt, "producer", {"id": pid, "in": "0", "out": str(out_frame)})
+        ET.SubElement(prod, "property", {"name": "resource"}).text    = f"./{arc}"
+        ET.SubElement(prod, "property", {"name": "mlt_service"}).text = (
             "avformat" if kind == "video" else "qimage"
         )
         ET.SubElement(prod, "property", {"name": "kdenlive:clipname"}).text = (
@@ -2982,7 +3001,7 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
             "1" if kind == "video" else "2"
         )
 
-    # Audio producer for voiceover
+    # Audio producer
     audio_pid = None
     if audio_arc:
         audio_pid = f"producer_{len(producer_ids):04d}"
@@ -2994,58 +3013,31 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
         except Exception:
             adur = 120.0
         a_out = max(0, _frames(adur, fps) - 1)
-        aprod = ET.SubElement(mlt, "producer", {
-            "id":  audio_pid,
-            "in":  "0",
-            "out": str(a_out),
-        })
+        aprod = ET.SubElement(mlt, "producer", {"id": audio_pid, "in": "0", "out": str(a_out)})
         ET.SubElement(aprod, "property", {"name": "resource"}).text     = f"./{audio_arc}"
         ET.SubElement(aprod, "property", {"name": "mlt_service"}).text  = "avformat"
         ET.SubElement(aprod, "property", {"name": "kdenlive:clipname"}).text = "Voiceover"
-        ET.SubElement(aprod, "property", {"name": "kdenlive:clip_type"}).text = "4"  # audio
+        ET.SubElement(aprod, "property", {"name": "kdenlive:clip_type"}).text = "4"
 
-    # ── Main tractor (timeline) ───────────────────────────────────────────────
+    # ── FIX A: Build playlists BEFORE the tractor ────────────────────────────
     total_dur_sec = sum(c["duration_sec"] for c in clips)
     total_frames  = _frames(total_dur_sec, fps)
 
-    tractor = ET.SubElement(mlt, "tractor", {
-        "id":  "main_bin",
-        "in":  "0",
-        "out": str(total_frames - 1),
-    })
-    ET.SubElement(tractor, "property", {"name": "kdenlive:projectTractor"}).text = "1"
-
-    # Track 0: black background (mandatory in KDEnlive)
-    ET.SubElement(tractor, "track", {"producer": "black_track"})
-
-    # Track 1: video/image playlist
     video_playlist_id = "playlist_video"
-    ET.SubElement(tractor, "track", {"producer": video_playlist_id})
+    audio_playlist_id = "playlist_audio"
 
-    # Track 2: audio (hidden video)
-    if audio_pid:
-        audio_playlist_id = "playlist_audio"
-        ET.SubElement(tractor, "track", {
-            "producer": audio_playlist_id,
-            "hide":     "video",
-        })
-
-    # ── Video playlist ────────────────────────────────────────────────────────
-    vpl = ET.SubElement(mlt, "playlist", {"id": video_playlist_id})
+    # Video playlist
+    vpl           = ET.SubElement(mlt, "playlist", {"id": video_playlist_id})
     current_frame = 0
     for c, arc in zip(clips, clip_arc_names):
         dur_frames = _frames(c["duration_sec"], fps)
         pid        = producer_ids.get(arc)
         if not pid:
-            # No producer (file missing) — insert blank
             ET.SubElement(vpl, "blank", {"length": str(dur_frames)})
             current_frame += dur_frames
             continue
-        kind = c["media_kind"]
-        if kind == "video":
-            out_f = min(dur_frames - 1, _frames(c["duration_sec"], fps) - 1)
-        else:
-            out_f = dur_frames - 1
+        kind  = c["media_kind"]
+        out_f = dur_frames - 1
         ET.SubElement(vpl, "entry", {
             "producer": pid,
             "in":       "0",
@@ -3053,31 +3045,47 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
         })
         current_frame += dur_frames
 
-    # ── Audio playlist ────────────────────────────────────────────────────────
+    # Audio playlist
     if audio_pid:
         apl = ET.SubElement(mlt, "playlist", {"id": audio_playlist_id})
         try:
-            ac    = AudioFileClip(audio_path)
-            adur  = ac.duration
+            ac   = AudioFileClip(audio_path)
+            adur = ac.duration
             ac.close()
         except Exception:
-            adur  = total_dur_sec
+            adur = total_dur_sec
         ET.SubElement(apl, "entry", {
             "producer": audio_pid,
             "in":       "0",
             "out":      str(max(0, _frames(adur, fps) - 1)),
         })
 
-    # ── Serialise XML ─────────────────────────────────────────────────────────
-    raw_xml  = ET.tostring(mlt, encoding="unicode")
-    pretty   = minidom.parseString(raw_xml).toprettyxml(indent="  ", encoding="utf-8")
+    # ── Tractor (LAST — after all playlists it references) ───────────────────
+    tractor = ET.SubElement(mlt, "tractor", {
+        "id":  "main_bin",
+        "in":  "0",
+        "out": str(total_frames - 1),
+    })
+    ET.SubElement(tractor, "property", {"name": "kdenlive:projectTractor"}).text = "1"
 
-    # ── Build ZIP in memory ───────────────────────────────────────────────────
+    # Track 0: black background (mandatory)
+    ET.SubElement(tractor, "track", {"producer": "black_track"})
+    # Track 1: video/image
+    ET.SubElement(tractor, "track", {"producer": video_playlist_id})
+    # Track 2: audio
+    if audio_pid:
+        ET.SubElement(tractor, "track", {
+            "producer": audio_playlist_id,
+            "hide":     "video",
+        })
+
+    # ── Serialise & ZIP ───────────────────────────────────────────────────────
+    raw_xml = ET.tostring(mlt, encoding="unicode")
+    pretty  = minidom.parseString(raw_xml).toprettyxml(indent="  ", encoding="utf-8")
+
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Project file
         zf.writestr(f"{safe_topic}.kdenlive", pretty)
-        # Media files
         for mi in media_items:
             sp = mi["src_path"]
             if sp and os.path.exists(sp):
@@ -3601,17 +3609,55 @@ with tab1:
     if active_mode == MODE_FILM:
         c1, c2 = st.columns(2)
         with c1:
-            matrix_data["Theory"] = st.select_slider("Film Theory Focus", ["Formalist", "Psychological", "Auteur", "Montage"])
-            matrix_data["Visuals"] = st.select_slider("Visual Signature", ["Standard", "Stylized", "Iconic"])
+            matrix_data["Theory"] = st.selectbox(
+                "Film Theory Focus",
+                ["Formalist", "Psychological", "Auteur", "Montage"],
+                help="Shapes the analytical lens of the script.",
+            )
+            matrix_data["Visuals"] = st.selectbox(
+                "Visual Signature",
+                ["Standard", "Stylized", "Iconic"],
+                help="How visually bold the language and references are.",
+            )
         with c2:
-            matrix_data["Fidelity"] = st.select_slider("Adaptation Fidelity", ["Loose", "Balanced", "Literal"])
-            matrix_data["Tone"] = st.selectbox("Narrative Tone", ["Conversational", "Melancholic", "Frantic", "Academic"])
+            matrix_data["Fidelity"] = st.selectbox(
+                "Adaptation Fidelity",
+                ["Loose", "Balanced", "Literal"],
+                help="How closely the script compares source vs screen.",
+            )
+            matrix_data["Tone"] = st.selectbox(
+                "Narrative Tone",
+                ["Conversational", "Melancholic", "Frantic", "Academic"],
+                help="Overall emotional register of the voiceover.",
+            )
     elif active_mode == MODE_TECH:
-        matrix_data["Severity"] = st.select_slider("Criticality", ["Bug", "Outage", "Crisis"])
-        matrix_data["Scope"] = st.select_slider("User Impact", ["Niche", "Widespread", "Global"])
+        c1, c2 = st.columns(2)
+        with c1:
+            matrix_data["Severity"] = st.selectbox(
+                "Criticality",
+                ["Bug", "Outage", "Crisis"],
+                help="How severe the incident framing should be.",
+            )
+        with c2:
+            matrix_data["Scope"] = st.selectbox(
+                "User Impact",
+                ["Niche", "Widespread", "Global"],
+                help="Scale of the affected audience.",
+            )
     else:
-        matrix_data["Complexity"] = st.select_slider("Knowledge Level", ["Junior", "Senior", "Architect"])
-        matrix_data["Method"] = st.select_slider("Pedagogical Style", ["Theory", "Mixed", "Practical"])
+        c1, c2 = st.columns(2)
+        with c1:
+            matrix_data["Complexity"] = st.selectbox(
+                "Knowledge Level",
+                ["Junior", "Senior", "Architect"],
+                help="Target audience technical depth.",
+            )
+        with c2:
+            matrix_data["Method"] = st.selectbox(
+                "Pedagogical Style",
+                ["Theory", "Mixed", "Practical"],
+                help="How much hands-on vs conceptual content.",
+            )
     st.markdown('</div>', unsafe_allow_html=True)
  
     st.divider()
@@ -4015,6 +4061,34 @@ with tab5:
             with col2: st.text_area("Hashtags", value=" ".join(bundle.get("hashtags", [])), height=90)
             st.text_area("🎨 AI Thumbnail Prompt", value=bundle.get("thumbnail_prompt", ""), height=120)
  
+            # ── Download bundle as plain-text ────────────────────────────────
+            bundle_txt_lines = [
+                f"VIRAL TITLE\n{'─'*60}",
+                bundle.get("viral_title", ""),
+                "",
+                f"DESCRIPTION\n{'─'*60}",
+                bundle.get("description", ""),
+                "",
+                f"TAGS\n{'─'*60}",
+                ", ".join(bundle.get("tags", [])),
+                "",
+                f"HASHTAGS\n{'─'*60}",
+                " ".join(bundle.get("hashtags", [])),
+                "",
+                f"AI THUMBNAIL PROMPT\n{'─'*60}",
+                bundle.get("thumbnail_prompt", ""),
+            ]
+            bundle_txt = "\n".join(bundle_txt_lines)
+            _topic_slug = st.session_state.get("topic_param", "bundle").replace(" ", "_").lower()
+            st.download_button(
+                "📄 Download Bundle as TXT",
+                data=bundle_txt.encode("utf-8"),
+                file_name=f"{_topic_slug}_content_bundle.txt",
+                mime="text/plain",
+                use_container_width=True,
+                key="dl_bundle_txt",
+            )
+
             _complete_banner("Content bundle ready!", "🎉 All steps complete! Your project is ready.")
 
 # ─────────────────────────────────────────────────────────────────────────────

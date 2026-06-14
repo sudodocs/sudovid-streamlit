@@ -990,33 +990,31 @@ audio {
 .sv-thumbnail-card .sv-bundle-card-label { color: var(--sv-blue) !important; }
  
 /* ── STEP COMPLETE BANNER ────────────────────────────────────────────────── */
-/* Outer text container */
-.sv-complete-banner-text {
+.sv-complete-banner {
     background: var(--sv-green-dim);
     border: 1px solid var(--sv-green-bdr);
     border-radius: var(--sv-radius);
     padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin-top: 14px;
+    gap: 8px;
 }
 .sv-complete-text {
     font-size: 0.88rem;
     font-weight: 600;
     color: var(--sv-green) !important;
 }
-
-/* The CTA button is a native st.button — style it as an outlined blue pill */
-button[data-testid="stBaseButton-secondary"][id*="_nav_btn_"] {
-    background-color: var(--sv-surface) !important;
+.sv-complete-cta {
+    font-size: 0.82rem;
+    font-weight: 600;
     color: var(--sv-blue) !important;
-    border: 1px solid var(--sv-blue-border) !important;
-    font-size: 0.82rem !important;
-    font-weight: 600 !important;
-    height: 2.4rem !important;
-    margin-top: 14px;
-}
-button[data-testid="stBaseButton-secondary"][id*="_nav_btn_"]:hover {
-    background-color: var(--sv-blue-dim) !important;
-    border-color: var(--sv-blue) !important;
+    background: var(--sv-surface);
+    border: 1px solid var(--sv-blue-border);
+    border-radius: var(--sv-radius-sm);
+    padding: 5px 12px;
+    white-space: nowrap;
 }
 /* ── LOCKED TAB GATE ─────────────────────────────────────────────────────── */
 .sv-locked-gate {
@@ -1249,37 +1247,28 @@ button[data-testid="stBaseButton-secondary"][id*="_nav_btn_"]:hover {
 # HELPER: step-complete banner (reused across tabs)
 # ─────────────────────────────────────────────────────────────────────────────
  
-# Tab name → 0-based index mapping
-_TAB_INDEX = {
-    "1. Parameters":       0,
-    "2. Research & Script": 1,
-    "3. Voiceover":        2,
-    "4. Video Assembly":   3,
-    "5. Content Bundle":   4,
-}
+(tab1, tab2, tab3, tab4, tab5) = st.tabs([
+    "1. Parameters",
+    "2. Research & Script",
+    "3. Voiceover",
+    "4. Video Assembly",
+    "5. Content Bundle",
+])
 
-def _complete_banner(message: str, next_tab: str) -> None:
-    """
-    Render a green completion banner with a real clickable 'Go to X' button.
-    next_tab must match one of the keys in _TAB_INDEX exactly.
-    """
-    left, right = st.columns([3, 1])
-    with left:
-        st.markdown(
-            '<div class="sv-complete-banner-text">'
-            f'<span class="sv-complete-text">✓ {message}</span>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-    with right:
-        tab_idx = _TAB_INDEX.get(next_tab)
-        if tab_idx is not None:
-            btn_label = f"{next_tab} →"
-            # Use a unique key derived from the target tab index to avoid
-            # duplicate-key errors when the banner appears multiple times.
-            if st.button(btn_label, key=f"_nav_btn_{tab_idx}", use_container_width=True):
-                st.session_state["_active_tab"] = tab_idx
-                st.rerun()
+def _complete_banner(message: str, next_tab: str | None = None) -> None:
+    """Render a green completion banner with an optional next-step label."""
+    cta_html = (
+        f'<span class="sv-complete-cta">{next_tab} →</span>'
+        if next_tab else
+        '<span class="sv-complete-text">🎉 All steps complete!</span>'
+    )
+    st.markdown(
+        f'<div class="sv-complete-banner">'
+        f'<span class="sv-complete-text">✓ {message}</span>'
+        f'{cta_html}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
 def _locked_gate(required_steps: list[tuple[str, bool]]) -> None:
     """

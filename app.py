@@ -104,12 +104,17 @@ PEXELS_VIDEO_BASE = "https://api.pexels.com/videos/search"
 PROGRESS_FILE   = os.path.join(tempfile.gettempdir(), "sa_video_progress.json")
 
 # Temp directory structure
-TMP_ROOT         = tempfile.gettempdir()
-UPLOAD_DIR       = os.path.join(TMP_ROOT, "sudovid_uploads")
-KEYFRAME_DIR     = os.path.join(TMP_ROOT, "sudovid_keyframes")
-PEXELS_CACHE_DIR = os.path.join(TMP_ROOT, "sudovid_pexels_cache")
+TMP_ROOT          = tempfile.gettempdir()
+UPLOAD_DIR        = os.path.join(TMP_ROOT, "sudovid_uploads")
+KEYFRAME_DIR      = os.path.join(TMP_ROOT, "sudovid_keyframes")
+PEXELS_CACHE_DIR  = os.path.join(TMP_ROOT, "sudovid_pexels_cache")
+IMAGES_CACHE_DIR  = os.path.join(TMP_ROOT, "sudovid_images_cache")  # wiki/openverse stills
+CARDS_DIR         = os.path.join(TMP_ROOT, "sudovid_cards")          # generated card PNGs
 
-for _d in (UPLOAD_DIR, KEYFRAME_DIR, PEXELS_CACHE_DIR):
+# Written by assembly worker; read by project-file generators
+MANIFEST_FILE     = os.path.join(TMP_ROOT, "sudovid_clip_manifest.json")
+
+for _d in (UPLOAD_DIR, KEYFRAME_DIR, PEXELS_CACHE_DIR, IMAGES_CACHE_DIR, CARDS_DIR):
     os.makedirs(_d, exist_ok=True)
 
 # Model name — Gemini 3.5 Flash (stable, current flagship)
@@ -1504,16 +1509,29 @@ def generate_shot_list(api_key: str, has_trailer: bool, is_shorts: bool) -> list
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CLIP RESOLVER  — per-clip credit logic
+# CLIP RESOLVER  — per-clip credit logic + path tracking for project export
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Credit rules (per spec):
-#   user_upload_*  → ""                        (creator's own content, no credit)
+# Credit rules:
+#   user_upload_*  → ""                        (creator's own content)
 #   pexels_video   → "Video: Pexels.com"
 #   pexels_image   → "Photo: Pexels.com"
 #   trailer_clip   → "Courtesy: {topic} Official Trailer"
-#   wiki/openverse → "Image: Wikipedia / Wikimedia Commons" or "Image: OpenVerse CC"
-#   *_card         → ""                        (generated, no third-party source)
+#   wiki/openverse → "Image: Wikipedia / Wikimedia Commons" / "Image: OpenVerse CC"
+#   *_card         → ""                        (generated)
+#
+# Returns: (visual, credit_str, media_path, media_kind)
+#   media_path  → absolute path on disk (for project file manifest)
+#   media_kind  → "video" | "image"  (needed for NLE project XML)
+
+def _save_image_to_cache(arr: np.ndarray, slug: str, subdir: str) -> str:
+    """Save ndarray RGB image to subdir as PNG. Returns path."""
+    os.makedirs(subdir, exist_ok=True)
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", slug)[:60]
+    path = os.path.join(subdir, f"{safe}.png")
+    Image.fromarray(arr.astype(np.uint8)).save(path, "PNG")
+    return path
+
 
 def _resolve_clip(shot, mode,
                   used_urls: set, topic,
@@ -1524,14 +1542,18 @@ def _resolve_clip(shot, mode,
                   pexels_key: str,
                   media_analysis: list[dict]):
     """
-    Resolve one shot dict → (visual, credit_str).
+    Resolve one shot dict → (visual, credit_str, media_path, media_kind).
     visual      → np.ndarray (still) or MoviePy clip
     credit_str  → per-source attribution or ""
+    media_path  → absolute disk path (empty string if unavailable)
+    media_kind  → "video" | "image"
     """
-    stype       = shot.get("type", "text_card")
-    upload_fn   = shot.get("upload_filename", "")
-    arr         = None
-    clip_credit = ""
+    stype        = shot.get("type", "text_card")
+    upload_fn    = shot.get("upload_filename", "")
+    arr          = None
+    clip_credit  = ""
+    media_path   = ""
+    media_kind   = "image"   # default; overridden for video types
 
     # Build lookup: filename → path from media_analysis
     upload_map = {m["filename"]: m["path"] for m in media_analysis}
@@ -1544,25 +1566,29 @@ def _resolve_clip(shot, mode,
             used_urls.add(url)
         return a
 
-    # ── USER UPLOAD — VIDEO ─────────────────────────────────────────────────
+    # ── USER UPLOAD — VIDEO ──────────────────────────────────────────────────
     if stype == "user_upload_video":
         path = upload_map.get(upload_fn)
         if path and os.path.exists(path):
             try:
-                duration = max(float(shot.get("duration_seconds", 12)), 5.0)
-                clip = _loop_video_clip(path, duration, cw, ch)
-                return clip, ""   # No credit for own content
+                duration   = max(float(shot.get("duration_seconds", 12)), 5.0)
+                clip       = _loop_video_clip(path, duration, cw, ch)
+                media_path = path
+                media_kind = "video"
+                return clip, "", media_path, media_kind
             except Exception:
                 pass  # fall through to fallback
 
-    # ── USER UPLOAD — IMAGE ─────────────────────────────────────────────────
+    # ── USER UPLOAD — IMAGE ──────────────────────────────────────────────────
     elif stype == "user_upload_image":
         path = upload_map.get(upload_fn)
         if path and os.path.exists(path):
             try:
-                img = Image.open(path).convert("RGB")
-                arr = _fit_to_canvas(img, cw, ch)
-                return arr, ""   # No credit for own content
+                img        = Image.open(path).convert("RGB")
+                arr        = _fit_to_canvas(img, cw, ch)
+                media_path = path
+                media_kind = "image"
+                return arr, "", media_path, media_kind
             except Exception:
                 pass
 
@@ -1595,31 +1621,38 @@ def _resolve_clip(shot, mode,
                         oy = (ch - vc_r.h) // 2
                         vc = CompositeVideoClip(
                             [bg_clip, vc_r.set_position((ox, oy))], size=(cw, ch))
-                return vc, f"Courtesy: {topic} Official Trailer"
+                media_path = trailer_path
+                media_kind = "video"
+                return vc, f"Courtesy: {topic} Official Trailer", media_path, media_kind
             except Exception:
                 pass
 
     # ── PEXELS VIDEO ─────────────────────────────────────────────────────────
     elif stype == "pexels_video":
-        query = shot.get("pexels_query") or topic
+        query       = shot.get("pexels_query") or topic
         orientation = "portrait" if is_shorts else "landscape"
-        video_path = _pexels_video_download(
+        video_path  = _pexels_video_download(
             query, pexels_key, PEXELS_CACHE_DIR, orientation)
         if video_path:
             try:
-                duration = max(float(shot.get("duration_seconds", 12)), 5.0)
-                clip = _loop_video_clip(video_path, duration, cw, ch)
-                return clip, "Video: Pexels.com"
+                duration   = max(float(shot.get("duration_seconds", 12)), 5.0)
+                clip       = _loop_video_clip(video_path, duration, cw, ch)
+                media_path = video_path
+                media_kind = "video"
+                return clip, "Video: Pexels.com", media_path, media_kind
             except Exception:
                 pass
 
     # ── PEXELS IMAGE ─────────────────────────────────────────────────────────
     elif stype == "pexels_image":
-        query = shot.get("pexels_query") or topic
+        query       = shot.get("pexels_query") or topic
         orientation = "portrait" if is_shorts else "landscape"
-        url = _pexels_image_url(query, pexels_key, orientation)
-        arr = _fetch_unique(url)
+        url         = _pexels_image_url(query, pexels_key, orientation)
+        arr         = _fetch_unique(url)
         if arr is not None:
+            slug       = re.sub(r"[^a-z0-9]", "_", query.lower())[:40]
+            media_path = _save_image_to_cache(arr, f"pexels_{slug}", PEXELS_CACHE_DIR)
+            media_kind = "image"
             clip_credit = "Photo: Pexels.com"
 
     # ── WIKI / TMDB (via Wikipedia) ──────────────────────────────────────────
@@ -1636,22 +1669,30 @@ def _resolve_clip(shot, mode,
         url = _wiki_image_multi(queries)
         arr = _fetch_unique(url)
         if arr is not None:
+            slug       = re.sub(r"[^a-z0-9]", "_", (queries[0] or topic).lower())[:40]
+            media_path = _save_image_to_cache(arr, f"wiki_{slug}", IMAGES_CACHE_DIR)
+            media_kind = "image"
             clip_credit = "Image: Wikipedia / Wikimedia Commons"
 
-    # ── OPENVERSE (generic B-roll fallback when no pexels key) ───────────────
+    # ── OPENVERSE / PEXELS_BROLL fallback ────────────────────────────────────
     elif stype in ("pexels_broll", "openverse_image"):
         query = (shot.get("pexels_query") or shot.get("image_query") or topic)
-        # Try Pexels image first if key available
         if pexels_key:
             url = _pexels_image_url(query, pexels_key)
             arr = _fetch_unique(url)
             if arr is not None:
+                slug       = re.sub(r"[^a-z0-9]", "_", query.lower())[:40]
+                media_path = _save_image_to_cache(arr, f"pexels_{slug}", PEXELS_CACHE_DIR)
+                media_kind = "image"
                 clip_credit = "Photo: Pexels.com"
         if arr is None:
             for page in range(1, 4):
                 url = _openverse_image(query, page=page)
                 arr = _fetch_unique(url)
                 if arr is not None:
+                    slug       = re.sub(r"[^a-z0-9]", "_", query.lower())[:40]
+                    media_path = _save_image_to_cache(arr, f"openverse_{slug}", IMAGES_CACHE_DIR)
+                    media_kind = "image"
                     clip_credit = "Image: OpenVerse (CC licensed)"
                     break
 
@@ -1660,52 +1701,73 @@ def _resolve_clip(shot, mode,
         arr = make_text_card(
             shot.get("text_line1", shot.get("note", topic)),
             shot.get("text_line2", ""), mode=mode, cw=cw, ch=ch)
+        slug       = f"card_text_{shot.get('segment_index', 0):03d}"
+        media_path = _save_image_to_cache(arr, slug, CARDS_DIR)
+        media_kind = "image"
 
     elif stype == "stat_card":
         arr = make_stat_card(
             shot.get("stat_value", ""), shot.get("stat_desc", ""),
             mode=mode, cw=cw, ch=ch)
+        slug       = f"card_stat_{shot.get('segment_index', 0):03d}"
+        media_path = _save_image_to_cache(arr, slug, CARDS_DIR)
+        media_kind = "image"
 
     elif stype == "code_card":
         arr = make_code_card(
             shot.get("code_snippet", "# No code provided"),
             shot.get("code_language", ""), cw=cw, ch=ch)
+        slug       = f"card_code_{shot.get('segment_index', 0):03d}"
+        media_path = _save_image_to_cache(arr, slug, CARDS_DIR)
+        media_kind = "image"
 
     elif stype == "chapter_card":
         arr = make_chapter_card(
             int(shot.get("chapter_num", 1) or 1),
             shot.get("chapter_title", shot.get("note", "")),
             mode=mode, cw=cw, ch=ch)
+        slug       = f"card_chapter_{shot.get('segment_index', 0):03d}"
+        media_path = _save_image_to_cache(arr, slug, CARDS_DIR)
+        media_kind = "image"
 
     # ── FALLBACK CHAIN ───────────────────────────────────────────────────────
-    # Reached only if the primary resolver above didn't return early
     if arr is None and not hasattr(arr, "duration"):
         # 1. Pexels image on topic
         if pexels_key:
             url = _pexels_image_url(topic, pexels_key)
             arr = _fetch_unique(url)
             if arr is not None:
+                slug       = re.sub(r"[^a-z0-9]", "_", topic.lower())[:40]
+                media_path = _save_image_to_cache(arr, f"pexels_fb_{slug}", PEXELS_CACHE_DIR)
+                media_kind = "image"
                 clip_credit = "Photo: Pexels.com"
         # 2. OpenVerse
         if arr is None:
             url = _openverse_image(topic + " cinematic")
             arr = _fetch_unique(url)
             if arr is not None:
+                slug       = re.sub(r"[^a-z0-9]", "_", topic.lower())[:40]
+                media_path = _save_image_to_cache(arr, f"ov_fb_{slug}", IMAGES_CACHE_DIR)
+                media_kind = "image"
                 clip_credit = "Image: OpenVerse (CC licensed)"
         # 3. Wikipedia
         if arr is None:
             url = _wiki_image(topic)
             arr = _fetch_unique(url)
             if arr is not None:
+                slug       = re.sub(r"[^a-z0-9]", "_", topic.lower())[:40]
+                media_path = _save_image_to_cache(arr, f"wiki_fb_{slug}", IMAGES_CACHE_DIR)
+                media_kind = "image"
                 clip_credit = "Image: Wikipedia / Wikimedia Commons"
         # 4. Generated text card — always succeeds
         if arr is None:
-            arr = make_text_card(shot.get("note", topic), mode=mode, cw=cw, ch=ch)
+            arr        = make_text_card(shot.get("note", topic), mode=mode, cw=cw, ch=ch)
+            slug       = f"card_fallback_{shot.get('segment_index', 0):03d}"
+            media_path = _save_image_to_cache(arr, slug, CARDS_DIR)
+            media_kind = "image"
             clip_credit = ""
 
-    return arr, clip_credit
-
-
+    return arr, clip_credit, media_path, media_kind
 # ─────────────────────────────────────────────────────────────────────────────
 # BACKGROUND ASSEMBLY WORKER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1739,6 +1801,8 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
         clip_starts  = []
         running_time = 0.0
 
+        manifest = []   # populated per clip; written to disk after render
+
         for i, shot in enumerate(shot_list):
             pct = 12 + int(68 * i / total)
             _write_progress(pct,
@@ -1748,7 +1812,7 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
             duration = max(float(shot.get("duration_seconds", 12)), 5.0)
             zoom_in  = (i % 2 == 0)
 
-            visual, auto_credit = _resolve_clip(
+            visual, auto_credit, m_path, m_kind = _resolve_clip(
                 shot, mode,
                 used_urls, topic,
                 trailer_path, trailer_segs,
@@ -1764,6 +1828,16 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
 
             clip_starts.append(running_time)
             clip_credits.append(auto_credit)
+            manifest.append({
+                "index":        i,
+                "type":         shot.get("type", ""),
+                "path":         m_path,
+                "media_kind":   m_kind,
+                "duration_sec": duration,
+                "credit":       auto_credit,
+                "label":        shot.get("note") or shot.get("upload_filename")
+                                or shot.get("pexels_query") or shot.get("text_line1", ""),
+            })
             running_time += duration
             clips.append(clip)
 
@@ -1810,6 +1884,24 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
             audio_codec="aac", preset="ultrafast",
             threads=2, logger=None,
         )
+
+        # ── Write clip manifest for NLE project export ────────────────────────
+        # Includes audio path so project generators can place the voiceover track
+        manifest_data = {
+            "clips":       manifest,
+            "audio_path":  audio_path,
+            "is_shorts":   is_shorts,
+            "topic":       topic,
+            "fps":         FPS,
+            "canvas_w":    cw,
+            "canvas_h":    ch,
+        }
+        try:
+            with open(MANIFEST_FILE, "w") as mf:
+                json.dump(manifest_data, mf, indent=2)
+        except Exception:
+            pass   # manifest failure must never block the render
+
         _write_progress(100, "Done!", done=True)
 
     except Exception as e:
@@ -1817,18 +1909,430 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# NLE PROJECT FILE GENERATORS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _frames(sec: float, fps: int = FPS) -> int:
+    """Convert seconds to whole frame count."""
+    return max(1, int(round(sec * fps)))
+
+
+def _fcpxml_dur(sec: float, fps: int = FPS) -> str:
+    """
+    FCPXML rational time string for a duration in seconds.
+    Uses 2400 timebase (standard for 24fps in FCPXML).
+    e.g.  20s → "48000/2400s",  8.5s → "20400/2400s"
+    """
+    frames = _frames(sec, fps)
+    return f"{frames * 100}/2400s"   # 2400 = 24fps * 100 sub-frame units
+
+
+def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
+    """
+    Build a KDEnlive 22+ project ZIP in memory.
+
+    Structure:
+        {topic}.kdenlive   — MLT XML referencing ./media/... (relative paths)
+        media/
+            voiceover.mp3
+            000_clip.mp4 / 000_clip.png
+            001_clip.jpg
+            ...
+
+    Returns ZIP bytes or None on failure.
+    MLT XML targets KDEnlive 22+ (mlt version 7.x, kdenlive namespace).
+    """
+    import zipfile
+    import xml.etree.ElementTree as ET
+    from xml.dom import minidom
+
+    try:
+        with open(manifest_path) as f:
+            mdata = json.load(f)
+    except Exception:
+        return None
+
+    clips      = mdata["clips"]
+    audio_path = mdata.get("audio_path", "")
+    fps        = mdata.get("fps", FPS)
+    cw         = mdata.get("canvas_w", 1280)
+    ch         = mdata.get("canvas_h", 720)
+    is_shorts  = mdata.get("is_shorts", False)
+
+    safe_topic = re.sub(r"[^a-zA-Z0-9_-]", "_", topic)[:40]
+
+    # ── Collect media files ───────────────────────────────────────────────────
+    # media_items: list of { "arc_name": str, "src_path": str, "kind": str }
+    media_items = []
+    seen_paths  = {}   # src_path → arc_name (dedup sources used in multiple shots)
+
+    def _add_media(src_path: str, kind: str, idx: int, label: str) -> str:
+        """Register a media file; return its archive name inside media/."""
+        if not src_path or not os.path.exists(src_path):
+            return ""
+        if src_path in seen_paths:
+            return seen_paths[src_path]
+        ext      = os.path.splitext(src_path)[1] or (".mp4" if kind == "video" else ".png")
+        safe_lbl = re.sub(r"[^a-zA-Z0-9_-]", "_", label or "clip")[:30]
+        arc_name = f"media/{idx:03d}_{safe_lbl}{ext}"
+        media_items.append({"arc_name": arc_name, "src_path": src_path, "kind": kind})
+        seen_paths[src_path] = arc_name
+        return arc_name
+
+    clip_arc_names = []
+    for c in clips:
+        arc = _add_media(c["path"], c["media_kind"], c["index"], c["label"])
+        clip_arc_names.append(arc)
+
+    # Voiceover
+    audio_arc = ""
+    if audio_path and os.path.exists(audio_path):
+        ext       = os.path.splitext(audio_path)[1] or ".mp3"
+        audio_arc = f"media/voiceover{ext}"
+        media_items.append({"arc_name": audio_arc, "src_path": audio_path, "kind": "audio"})
+
+    # ── Build MLT XML ─────────────────────────────────────────────────────────
+    # KDEnlive 22+ wraps standard MLT XML with its own namespace attributes.
+    mlt = ET.Element("mlt", {
+        "LC_ALL":   "en_US.UTF-8",
+        "version":  "7.22.0",
+        "root":     ".",
+        "producer": "main_bin",
+    })
+
+    # Profile
+    ET.SubElement(mlt, "profile", {
+        "description":    f"{'HD 1080p 24fps' if not is_shorts else 'Vertical 1080x1920 24fps'}",
+        "width":          str(cw),
+        "height":         str(ch),
+        "progressive":    "1",
+        "sample_aspect_num": "1",
+        "sample_aspect_den": "1",
+        "display_aspect_num": str(cw),
+        "display_aspect_den": str(ch),
+        "frame_rate_num": str(fps),
+        "frame_rate_den": "1",
+        "colorspace":     "709",
+    })
+
+    # ── Producers (one per unique media file) ─────────────────────────────────
+    producer_ids = {}   # arc_name → producer id string
+
+    # Black background producer (KDEnlive mandatory)
+    black = ET.SubElement(mlt, "producer", {"id": "black_track", "in": "0", "out": "999999"})
+    ET.SubElement(black, "property", {"name": "resource"}).text       = "black"
+    ET.SubElement(black, "property", {"name": "mlt_service"}).text    = "color"
+    ET.SubElement(black, "property", {"name": "kdenlive:clipname"}).text = "Black"
+
+    for mi in media_items:
+        if mi["kind"] == "audio":
+            continue   # audio handled separately below
+        pid  = f"producer_{len(producer_ids):04d}"
+        kind = mi["kind"]
+        arc  = mi["arc_name"]
+        producer_ids[arc] = pid
+
+        # Total frames for the out point — use a large sentinel for images
+        if kind == "video":
+            try:
+                vc   = VideoFileClip(mi["src_path"])
+                dur  = vc.duration
+                vc.close()
+            except Exception:
+                dur = 30.0
+            out_frame = max(0, _frames(dur, fps) - 1)
+        else:
+            out_frame = 999999   # images: KDEnlive treats as infinite
+
+        prod = ET.SubElement(mlt, "producer", {
+            "id":  pid,
+            "in":  "0",
+            "out": str(out_frame),
+        })
+        ET.SubElement(prod, "property", {"name": "resource"}).text     = f"./{arc}"
+        ET.SubElement(prod, "property", {"name": "mlt_service"}).text  = (
+            "avformat" if kind == "video" else "qimage"
+        )
+        ET.SubElement(prod, "property", {"name": "kdenlive:clipname"}).text = (
+            os.path.basename(mi["src_path"])
+        )
+        ET.SubElement(prod, "property", {"name": "kdenlive:clip_type"}).text = (
+            "1" if kind == "video" else "2"
+        )
+
+    # Audio producer for voiceover
+    audio_pid = None
+    if audio_arc:
+        audio_pid = f"producer_{len(producer_ids):04d}"
+        producer_ids[audio_arc] = audio_pid
+        try:
+            ac   = AudioFileClip(audio_path)
+            adur = ac.duration
+            ac.close()
+        except Exception:
+            adur = 120.0
+        a_out = max(0, _frames(adur, fps) - 1)
+        aprod = ET.SubElement(mlt, "producer", {
+            "id":  audio_pid,
+            "in":  "0",
+            "out": str(a_out),
+        })
+        ET.SubElement(aprod, "property", {"name": "resource"}).text     = f"./{audio_arc}"
+        ET.SubElement(aprod, "property", {"name": "mlt_service"}).text  = "avformat"
+        ET.SubElement(aprod, "property", {"name": "kdenlive:clipname"}).text = "Voiceover"
+        ET.SubElement(aprod, "property", {"name": "kdenlive:clip_type"}).text = "4"  # audio
+
+    # ── Main tractor (timeline) ───────────────────────────────────────────────
+    total_dur_sec = sum(c["duration_sec"] for c in clips)
+    total_frames  = _frames(total_dur_sec, fps)
+
+    tractor = ET.SubElement(mlt, "tractor", {
+        "id":  "main_bin",
+        "in":  "0",
+        "out": str(total_frames - 1),
+    })
+    ET.SubElement(tractor, "property", {"name": "kdenlive:projectTractor"}).text = "1"
+
+    # Track 0: black background (mandatory in KDEnlive)
+    ET.SubElement(tractor, "track", {"producer": "black_track"})
+
+    # Track 1: video/image playlist
+    video_playlist_id = "playlist_video"
+    ET.SubElement(tractor, "track", {"producer": video_playlist_id})
+
+    # Track 2: audio (hidden video)
+    if audio_pid:
+        audio_playlist_id = "playlist_audio"
+        ET.SubElement(tractor, "track", {
+            "producer": audio_playlist_id,
+            "hide":     "video",
+        })
+
+    # ── Video playlist ────────────────────────────────────────────────────────
+    vpl = ET.SubElement(mlt, "playlist", {"id": video_playlist_id})
+    current_frame = 0
+    for c, arc in zip(clips, clip_arc_names):
+        dur_frames = _frames(c["duration_sec"], fps)
+        pid        = producer_ids.get(arc)
+        if not pid:
+            # No producer (file missing) — insert blank
+            ET.SubElement(vpl, "blank", {"length": str(dur_frames)})
+            current_frame += dur_frames
+            continue
+        kind = c["media_kind"]
+        if kind == "video":
+            out_f = min(dur_frames - 1, _frames(c["duration_sec"], fps) - 1)
+        else:
+            out_f = dur_frames - 1
+        ET.SubElement(vpl, "entry", {
+            "producer": pid,
+            "in":       "0",
+            "out":      str(out_f),
+        })
+        current_frame += dur_frames
+
+    # ── Audio playlist ────────────────────────────────────────────────────────
+    if audio_pid:
+        apl = ET.SubElement(mlt, "playlist", {"id": audio_playlist_id})
+        try:
+            ac    = AudioFileClip(audio_path)
+            adur  = ac.duration
+            ac.close()
+        except Exception:
+            adur  = total_dur_sec
+        ET.SubElement(apl, "entry", {
+            "producer": audio_pid,
+            "in":       "0",
+            "out":      str(max(0, _frames(adur, fps) - 1)),
+        })
+
+    # ── Serialise XML ─────────────────────────────────────────────────────────
+    raw_xml  = ET.tostring(mlt, encoding="unicode")
+    pretty   = minidom.parseString(raw_xml).toprettyxml(indent="  ", encoding="utf-8")
+
+    # ── Build ZIP in memory ───────────────────────────────────────────────────
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Project file
+        zf.writestr(f"{safe_topic}.kdenlive", pretty)
+        # Media files
+        for mi in media_items:
+            sp = mi["src_path"]
+            if sp and os.path.exists(sp):
+                zf.write(sp, mi["arc_name"])
+
+    buf.seek(0)
+    return buf.read()
+
+
+def generate_fcpxml(manifest_path: str, topic: str) -> str | None:
+    """
+    Build an FCPXML v1.10 project string importable by:
+      - DaVinci Resolve  (File → Import → Timeline)
+      - Final Cut Pro    (native)
+      - Premiere Pro     (via FCPXML import plugin)
+
+    Media is referenced by absolute file:/// URIs — no bundling needed.
+    User opens the .fcpxml in their NLE and re-links/auto-discovers media.
+
+    Timecode uses 2400 sub-frame timebase (standard for 24fps FCPXML).
+    """
+    try:
+        with open(manifest_path) as f:
+            mdata = json.load(f)
+    except Exception:
+        return None
+
+    clips      = mdata["clips"]
+    audio_path = mdata.get("audio_path", "")
+    fps        = mdata.get("fps", FPS)
+    cw         = mdata.get("canvas_w", 1280)
+    ch         = mdata.get("canvas_h", 720)
+
+    safe_topic = re.sub(r"[^a-zA-Z0-9 _-]", "", topic)[:60] or "SudoVid Project"
+    total_sec  = sum(c["duration_sec"] for c in clips)
+
+    def _asset_id(idx):
+        return f"a{idx + 1}"
+
+    def _format_id():
+        return "r1"
+
+    def _file_uri(path: str) -> str:
+        return "file://" + path.replace(" ", "%20")
+
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE fcpxml>',
+        '<fcpxml version="1.10">',
+        '  <resources>',
+        # Format resource
+        f'    <format id="{_format_id()}" '
+        f'name="FFVideoFormat{ch}p{fps}" '
+        f'frameDuration="{100 * fps // fps}/2400s" '
+        f'width="{cw}" height="{ch}"/>',
+    ]
+
+    # Asset per clip (deduplicate by path)
+    seen_asset_paths = {}
+    clip_asset_ids   = []
+
+    for i, c in enumerate(clips):
+        p = c.get("path", "")
+        if p and os.path.exists(p):
+            if p not in seen_asset_paths:
+                aid  = _asset_id(len(seen_asset_paths))
+                name = os.path.splitext(os.path.basename(p))[0]
+                has_v = "1" if c["media_kind"] in ("video", "image") else "0"
+                has_a = "1" if c["media_kind"] == "video" else "0"
+                lines.append(
+                    f'    <asset id="{aid}" name="{name}" '
+                    f'src="{_file_uri(p)}" '
+                    f'start="0s" duration="{_fcpxml_dur(c["duration_sec"], fps)}" '
+                    f'hasVideo="{has_v}" hasAudio="{has_a}"/>'
+                )
+                seen_asset_paths[p] = aid
+            clip_asset_ids.append(seen_asset_paths[p])
+        else:
+            clip_asset_ids.append(None)   # gap / generated card with no path
+
+    # Voiceover asset
+    audio_aid = None
+    if audio_path and os.path.exists(audio_path):
+        try:
+            ac   = AudioFileClip(audio_path)
+            adur = ac.duration
+            ac.close()
+        except Exception:
+            adur = total_sec
+        audio_aid = _asset_id(len(seen_asset_paths))
+        lines.append(
+            f'    <asset id="{audio_aid}" name="Voiceover" '
+            f'src="{_file_uri(audio_path)}" '
+            f'start="0s" duration="{_fcpxml_dur(adur, fps)}" '
+            f'hasVideo="0" hasAudio="1"/>'
+        )
+
+    lines += [
+        '  </resources>',
+        '  <library>',
+        f'    <event name="{safe_topic}">',
+        f'      <project name="{safe_topic}">',
+        f'        <sequence format="{_format_id()}" '
+        f'duration="{_fcpxml_dur(total_sec, fps)}" '
+        f'tcStart="0s" tcFormat="NDF" '
+        f'audioLayout="stereo" audioRate="48k">',
+        '          <spine>',
+    ]
+
+    # Video clips on spine
+    offset_sec = 0.0
+    for c, aid in zip(clips, clip_asset_ids):
+        dur_sec = c["duration_sec"]
+        name    = re.sub(r'[<>&"\']', "", c.get("label", "") or c["type"])
+        if aid:
+            lines.append(
+                f'            <clip name="{name}" ref="{aid}" '
+                f'offset="{_fcpxml_dur(offset_sec, fps)}" '
+                f'duration="{_fcpxml_dur(dur_sec, fps)}" '
+                f'start="0s"/>'
+            )
+        else:
+            # Gap for clips with no resolvable file (shouldn't happen, but safe)
+            lines.append(
+                f'            <gap name="gap" '
+                f'offset="{_fcpxml_dur(offset_sec, fps)}" '
+                f'duration="{_fcpxml_dur(dur_sec, fps)}" '
+                f'start="0s"/>'
+            )
+        offset_sec += dur_sec
+
+    # Voiceover as connected audio clip anchored to first spine clip
+    if audio_aid:
+        try:
+            ac   = AudioFileClip(audio_path)
+            adur = ac.duration
+            ac.close()
+        except Exception:
+            adur = total_sec
+        lines += [
+            f'            <audio name="Voiceover" ref="{audio_aid}" '
+            f'lane="-1" '
+            f'offset="0s" '
+            f'duration="{_fcpxml_dur(adur, fps)}" '
+            f'start="0s" role="dialogue"/>',
+        ]
+
+    lines += [
+        '          </spine>',
+        '        </sequence>',
+        '      </project>',
+        '    </event>',
+        '  </library>',
+        '</fcpxml>',
+    ]
+
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLEANUP
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _cleanup_temp():
-    """Remove keyframes and Pexels cache. Called on Reset All Steps."""
+    """Remove ephemeral cache dirs and manifest. Called on Reset All Steps."""
     import shutil
-    for d in (KEYFRAME_DIR, PEXELS_CACHE_DIR):
+    for d in (KEYFRAME_DIR, PEXELS_CACHE_DIR, IMAGES_CACHE_DIR, CARDS_DIR):
         try:
             shutil.rmtree(d, ignore_errors=True)
             os.makedirs(d, exist_ok=True)
         except Exception:
             pass
+    # Remove clip manifest so stale NLE exports are not offered
+    try:
+        os.remove(MANIFEST_FILE)
+    except FileNotFoundError:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2470,6 +2974,65 @@ with tab5:
                                 ),
                                 mime="video/mp4",
                             )
+                    # ── NLE Project Export ───────────────────────────────
+                    st.markdown("---")
+                    st.markdown("#### 🎞️ Export for Editing")
+                    st.caption(
+                        "Download a ready-to-open project file with all media "
+                        "included. Open in your NLE and edit freely."
+                    )
+                    manifest_exists = os.path.exists(MANIFEST_FILE)
+                    col_k, col_f = st.columns(2)
+
+                    with col_k:
+                        if manifest_exists:
+                            if st.button("📦 Build KDEnlive Project (.zip)",
+                                         key="btn_kdenlive"):
+                                with st.spinner("Packaging KDEnlive project…"):
+                                    zip_bytes = generate_kdenlive_project(
+                                        MANIFEST_FILE, topic_val)
+                                if zip_bytes:
+                                    safe = re.sub(r"[^a-zA-Z0-9_-]", "_",
+                                                  topic_val)[:40]
+                                    st.download_button(
+                                        "⬇️ Download KDEnlive ZIP",
+                                        data=zip_bytes,
+                                        file_name=f"{safe}_kdenlive.zip",
+                                        mime="application/zip",
+                                        key="dl_kdenlive",
+                                    )
+                                else:
+                                    st.error("KDEnlive export failed.")
+                        st.caption(
+                            "KDEnlive 22+ · Unzip, open `.kdenlive` · "
+                            "All media bundled in `media/` folder"
+                        )
+
+                    with col_f:
+                        if manifest_exists:
+                            if st.button("🎬 Export FCPXML (.fcpxml)",
+                                         key="btn_fcpxml"):
+                                with st.spinner("Generating FCPXML…"):
+                                    fcpxml_str = generate_fcpxml(
+                                        MANIFEST_FILE, topic_val)
+                                if fcpxml_str:
+                                    safe = re.sub(r"[^a-zA-Z0-9_-]", "_",
+                                                  topic_val)[:40]
+                                    st.download_button(
+                                        "⬇️ Download FCPXML",
+                                        data=fcpxml_str.encode("utf-8"),
+                                        file_name=f"{safe}.fcpxml",
+                                        mime="application/xml",
+                                        key="dl_fcpxml",
+                                    )
+                                else:
+                                    st.error("FCPXML export failed.")
+                        st.caption(
+                            "DaVinci Resolve · Final Cut Pro · Premiere Pro · "
+                            "File → Import → Timeline"
+                        )
+                    # ─────────────────────────────────────────────────────────
+
                     st.info(
                         "💡 Head to **Tab 6 — Content Bundle** whenever you're "
                         "ready to generate your title, description, tags, and "
@@ -2560,5 +3123,4 @@ with tab6:
 st.divider()
 st.caption(
     f"SudoVid v2.0 | AI-Powered Script, Voice & Video Engine | "
-    f"Model: {GEMINI_MODEL} | Content Bundle currently only supports YouTube"
 )

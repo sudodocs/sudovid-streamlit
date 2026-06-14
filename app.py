@@ -3092,34 +3092,31 @@ def _render_hero():
                 f'title="{step_label} — locked">·</span>'
             )
  
+        short = s["short"]
         connector = '<span class="sv-step-connector"></span>' if i < 5 else ""
-        dots_html += f"""
-            <div class="sv-step-dot">
-                {circle}
-                <span class="sv-step-label">{s['short']}</span>
-            </div>
-            {connector}
-        """
+        dots_html += (
+            '<div class="sv-step-dot">'
+            + circle
+            + f'<span class="sv-step-label">{short}</span>'
+            + "</div>"
+            + connector
+        )
  
-    st.markdown(
-        f"""
-        <div class="sv-hero">
-            <div class="sv-hero-left">
-                <div class="sv-hero-icon">🎬</div>
-                <div class="sv-hero-text">
-                    <span class="sv-hero-title">SudoVid</span>
-                    <span class="sv-hero-sub">
-                        AI-powered script, voice &amp; video engine
-                    </span>
-                </div>
-            </div>
-            <div class="sv-step-track">
-                {dots_html}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    hero_html = (
+        '<div class="sv-hero">'
+        '<div class="sv-hero-left">'
+        '<div class="sv-hero-icon">🎬</div>'
+        '<div class="sv-hero-text">'
+        '<span class="sv-hero-title">SudoVid</span>'
+        '<span class="sv-hero-sub">AI-powered script, voice &amp; video engine</span>'
+        "</div>"
+        "</div>"
+        '<div class="sv-step-track">'
+        + dots_html
+        + "</div>"
+        "</div>"
     )
+    st.markdown(hero_html, unsafe_allow_html=True)
  
  
 _render_hero()

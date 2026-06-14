@@ -3336,9 +3336,6 @@ def _render_hero():
         '</div>',
         unsafe_allow_html=True,
     )
- 
- 
-_render_hero()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR

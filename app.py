@@ -2882,6 +2882,13 @@ def _fcpxml_dur(sec: float, fps: int = FPS) -> str:
     frames = _frames(sec, fps)
     return f"{frames * 100}/2400s"   # 2400 = 24fps * 100 sub-frame units
 
+def _xml_safe(text: str) -> str:
+    """Strip control characters that make XML parsers crash."""
+    if not text:
+        return ""
+    # Remove ASCII control chars except tab, newline, carriage return
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", str(text))
+
 
 def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
     """
@@ -2899,7 +2906,6 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
     """
     import zipfile
     import xml.etree.ElementTree as ET
-    from xml.dom import minidom
 
     try:
         with open(manifest_path) as f:
@@ -3087,8 +3093,14 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
         })
 
     # ── Serialise & ZIP ───────────────────────────────────────────────────────
-    raw_xml = ET.tostring(mlt, encoding="unicode")
-    pretty  = minidom.parseString(raw_xml).toprettyxml(indent="  ", encoding="utf-8")
+    # Use ET's own indent (Python 3.9+) to avoid minidom's parseString
+    # which crashes on special characters in text nodes (clip names, paths).
+    ET.indent(mlt, space="  ")
+    raw_xml = ET.tostring(mlt, encoding="unicode", xml_declaration=False)
+    # Prepend a safe UTF-8 XML declaration manually
+    pretty  = '<?xml version="1.0" encoding="utf-8"?>\n' + raw_xml
+    # Encode to bytes for the ZIP
+    pretty  = pretty.encode("utf-8")
 
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

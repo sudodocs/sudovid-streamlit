@@ -3715,7 +3715,7 @@ with tab1:
             st.session_state["source_param"] = source_type
             st.session_state["matrix_param"] = json.dumps(matrix_data)
             st.session_state["angle_param"]  = final_angle
-            _complete_banner("2. Research & Script")
+            _complete_banner("Parameters saved!", "2. Research & Script")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 2 — RESEARCH & SCRIPT
@@ -3800,7 +3800,7 @@ with tab2:
                     )
  
                     st.download_button("📥 Download Script (.txt)", data=st.session_state["final_script_text"], file_name="script.txt", mime="text/plain")
-                    _complete_banner("3. Voiceover")
+                    _complete_banner("Script ready!", "3. Voiceover")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3903,7 +3903,7 @@ with tab3:
         st.audio(_ap, format="audio/mp3")
         with open(_ap, "rb") as af:
             st.download_button("📥 Download Audio (.mp3)", data=af, file_name=f"voiceover.mp3", mime="audio/mp3", key="dl_audio_persist")
-        _complete_banner("4. Video Assembly")
+        _complete_banner("Voiceover ready!", "4. Video Assembly")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4122,7 +4122,7 @@ with tab5:
                 key="dl_bundle_txt",
             )
 
-            _complete_banner("Content bundle ready!", "🎉 All steps complete! Your project is ready.")
+            st.success("✅ Content bundle ready! Your video project is complete. 🎉")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FOOTER

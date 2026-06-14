@@ -990,33 +990,33 @@ audio {
 .sv-thumbnail-card .sv-bundle-card-label { color: var(--sv-blue) !important; }
  
 /* ── STEP COMPLETE BANNER ────────────────────────────────────────────────── */
-.sv-complete-banner {
+/* Outer text container */
+.sv-complete-banner-text {
     background: var(--sv-green-dim);
     border: 1px solid var(--sv-green-bdr);
     border-radius: var(--sv-radius);
     padding: 12px 16px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
     margin-top: 14px;
-    flex-wrap: wrap;
-    gap: 8px;
 }
 .sv-complete-text {
     font-size: 0.88rem;
     font-weight: 600;
     color: var(--sv-green) !important;
 }
-.sv-complete-cta {
-    font-size: 0.82rem;
-    font-weight: 600;
+
+/* The CTA button is a native st.button — style it as an outlined blue pill */
+button[data-testid="stBaseButton-secondary"][id*="_nav_btn_"] {
+    background-color: var(--sv-surface) !important;
     color: var(--sv-blue) !important;
-    background: var(--sv-surface);
-    border: 1px solid var(--sv-blue-border);
-    border-radius: var(--sv-radius-sm);
-    padding: 5px 12px;
-    cursor: pointer;
-    white-space: nowrap;
+    border: 1px solid var(--sv-blue-border) !important;
+    font-size: 0.82rem !important;
+    font-weight: 600 !important;
+    height: 2.4rem !important;
+    margin-top: 14px;
+}
+button[data-testid="stBaseButton-secondary"][id*="_nav_btn_"]:hover {
+    background-color: var(--sv-blue-dim) !important;
+    border-color: var(--sv-blue) !important;
 }
 /* ── LOCKED TAB GATE ─────────────────────────────────────────────────────── */
 .sv-locked-gate {
@@ -1249,15 +1249,37 @@ audio {
 # HELPER: step-complete banner (reused across tabs)
 # ─────────────────────────────────────────────────────────────────────────────
  
+# Tab name → 0-based index mapping
+_TAB_INDEX = {
+    "1. Parameters":       0,
+    "2. Research & Script": 1,
+    "3. Voiceover":        2,
+    "4. Video Assembly":   3,
+    "5. Content Bundle":   4,
+}
+
 def _complete_banner(message: str, next_tab: str) -> None:
-    """Render a green completion banner with a next-step CTA label."""
-    st.markdown(
-        '<div class="sv-complete-banner">'
-        + '<span class="sv-complete-text">✓ ' + message + '</span>'
-        + '<span class="sv-complete-cta">' + next_tab + ' →</span>'
-        + '</div>',
-        unsafe_allow_html=True,
-    )
+    """
+    Render a green completion banner with a real clickable 'Go to X' button.
+    next_tab must match one of the keys in _TAB_INDEX exactly.
+    """
+    left, right = st.columns([3, 1])
+    with left:
+        st.markdown(
+            '<div class="sv-complete-banner-text">'
+            f'<span class="sv-complete-text">✓ {message}</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    with right:
+        tab_idx = _TAB_INDEX.get(next_tab)
+        if tab_idx is not None:
+            btn_label = f"{next_tab} →"
+            # Use a unique key derived from the target tab index to avoid
+            # duplicate-key errors when the banner appears multiple times.
+            if st.button(btn_label, key=f"_nav_btn_{tab_idx}", use_container_width=True):
+                st.session_state["_active_tab"] = tab_idx
+                st.rerun()
 
 def _locked_gate(required_steps: list[tuple[str, bool]]) -> None:
     """
@@ -3528,13 +3550,21 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS  (5 tabs — Media Upload merged into Video Assembly)
 # ─────────────────────────────────────────────────────────────────────────────
-(tab1, tab2, tab3, tab4, tab5) = st.tabs([
-    "1. Parameters",
-    "2. Research & Script",
-    "3. Voiceover",
-    "4. Video Assembly",
-    "5. Content Bundle",
-])
+# Tab navigation — any "Go to tab N" button sets this key then reruns
+_active_tab = st.session_state.get("_active_tab", 0)
+# Reset it immediately so subsequent reruns don't force the tab again
+st.session_state["_active_tab"] = 0
+
+(tab1, tab2, tab3, tab4, tab5) = st.tabs(
+    [
+        "1. Parameters",
+        "2. Research & Script",
+        "3. Voiceover",
+        "4. Video Assembly",
+        "5. Content Bundle",
+    ],
+    default=_active_tab,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 1 — PARAMETERS
@@ -3685,7 +3715,7 @@ with tab1:
             st.session_state["source_param"] = source_type
             st.session_state["matrix_param"] = json.dumps(matrix_data)
             st.session_state["angle_param"]  = final_angle
-            _complete_banner("Parameters saved!", "Go to 2. Research & Script")
+            _complete_banner("2. Research & Script")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 2 — RESEARCH & SCRIPT
@@ -3750,7 +3780,10 @@ with tab2:
  
                     fs = p.get("full_script", {})
                     default_text = "\n\n".join(filter(None, [
-                        p.get("hook_script", ""), fs.get("intro", ""), fs.get("act1", ""),
+                        # hook_script intentionally excluded — it duplicates the
+                        # opening of intro. The viral title card above serves
+                        # as the hook preview for the editor.
+                        fs.get("intro", ""), fs.get("act1", ""),
                         fs.get("act2", ""), fs.get("act3", ""), fs.get("outro", ""),
                     ]))
  
@@ -3767,7 +3800,7 @@ with tab2:
                     )
  
                     st.download_button("📥 Download Script (.txt)", data=st.session_state["final_script_text"], file_name="script.txt", mime="text/plain")
-                    _complete_banner("Script ready!", "Go to 3. Voiceover")
+                    _complete_banner("3. Voiceover")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3870,7 +3903,7 @@ with tab3:
         st.audio(_ap, format="audio/mp3")
         with open(_ap, "rb") as af:
             st.download_button("📥 Download Audio (.mp3)", data=af, file_name=f"voiceover.mp3", mime="audio/mp3", key="dl_audio_persist")
-        _complete_banner("Voiceover ready!", "Go to 4. Video Assembly")
+        _complete_banner("4. Video Assembly")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

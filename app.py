@@ -1013,7 +1013,150 @@ audio {
     padding: 5px 12px;
     cursor: pointer;
     white-space: nowrap;
-}           
+}
+/* ── LOCKED TAB GATE ─────────────────────────────────────────────────────── */
+.sv-locked-gate {
+    border: 1px solid var(--sv-border);
+    border-left: 3px solid var(--sv-border-med);
+    border-radius: 0 var(--sv-radius-lg) var(--sv-radius-lg) 0;
+    background: var(--sv-surface);
+    padding: 20px 22px;
+    margin-top: 8px;
+}
+.sv-locked-icon {
+    font-size: 28px;
+    margin-bottom: 10px;
+    display: block;
+}
+.sv-locked-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--sv-text) !important;
+    margin: 0 0 6px;
+}
+.sv-locked-body {
+    font-size: 0.82rem;
+    color: var(--sv-text-2) !important;
+    margin: 0 0 14px;
+    line-height: 1.6;
+}
+.sv-locked-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.sv-locked-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+}
+.sv-locked-step-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+.sv-locked-step-done {
+    background: var(--sv-green-dim);
+    color: var(--sv-green) !important;
+    border: 1px solid var(--sv-green-bdr);
+}
+.sv-locked-step-todo {
+    background: var(--sv-surface-2);
+    color: var(--sv-text-3) !important;
+    border: 1px solid var(--sv-border);
+}
+.sv-locked-step-label-done {
+    color: var(--sv-text-2) !important;
+    text-decoration: line-through;
+}
+.sv-locked-step-label-todo {
+    color: var(--sv-text) !important;
+    font-weight: 500;
+}
+ 
+/* ── TAB 2: MEDIA CARD (upgraded from legacy .media-card) ───────────────── */
+.sv-media-item {
+    border: 1px solid var(--sv-border);
+    border-radius: var(--sv-radius);
+    background: var(--sv-surface);
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+.sv-media-item-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+.sv-media-item-body { flex: 1; min-width: 0; }
+.sv-media-item-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--sv-text) !important;
+    margin: 0 0 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sv-media-item-row {
+    font-size: 0.76rem;
+    color: var(--sv-text-2) !important;
+    margin: 0 0 2px;
+    line-height: 1.5;
+}
+.sv-media-item-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+.sv-media-tag {
+    font-size: 0.68rem;
+    padding: 1px 7px;
+    border-radius: 99px;
+    background: var(--sv-surface-2);
+    border: 1px solid var(--sv-border);
+    color: var(--sv-text-2) !important;
+}
+ 
+/* ── TAB 5: PRE-FLIGHT CHECKLIST ────────────────────────────────────────── */
+.sv-preflight {
+    border: 1px solid var(--sv-border);
+    border-radius: var(--sv-radius-lg);
+    background: var(--sv-surface);
+    padding: 16px 18px;
+    margin-bottom: 16px;
+}
+.sv-preflight-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--sv-text-3) !important;
+    margin: 0 0 10px;
+}
+.sv-preflight-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--sv-border);
+    font-size: 0.82rem;
+}
+.sv-preflight-row:last-child { border-bottom: none; }
+.sv-preflight-ok   { color: var(--sv-green) !important; font-weight: 700; }
+.sv-preflight-fail { color: var(--sv-red)   !important; font-weight: 700; }
+.sv-preflight-label { color: var(--sv-text) !important; flex: 1; }
+.sv-preflight-detail { color: var(--sv-text-2) !important; font-size: 0.74rem; }           
 </style>
 """, unsafe_allow_html=True)
 
@@ -1027,6 +1170,41 @@ def _complete_banner(message: str, next_tab: str) -> None:
         '<div class="sv-complete-banner">'
         + '<span class="sv-complete-text">✓ ' + message + '</span>'
         + '<span class="sv-complete-cta">' + next_tab + ' →</span>'
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+
+def _locked_gate(required_steps: list[tuple[str, bool]]) -> None:
+    """
+    Render a locked-tab empty state.
+ 
+    required_steps: list of (label, is_done) tuples describing what the user
+                    still needs to complete before this tab unlocks.
+                    e.g. [("Save Parameters (Tab 1)", True),
+                           ("Generate Script (Tab 3)", False)]
+    """
+    first_todo = next((s[0] for s in required_steps if not s[1]), "previous step")
+ 
+    steps_html = '<div class="sv-locked-steps">'
+    for label, done in required_steps:
+        icon_cls  = "sv-locked-step-done" if done else "sv-locked-step-todo"
+        label_cls = "sv-locked-step-label-done" if done else "sv-locked-step-label-todo"
+        icon_char = "✓" if done else "·"
+        steps_html += (
+            '<div class="sv-locked-step">'
+            + f'<span class="sv-locked-step-icon {icon_cls}">{icon_char}</span>'
+            + f'<span class="{label_cls}">{label}</span>'
+            + '</div>'
+        )
+    steps_html += '</div>'
+ 
+    st.markdown(
+        '<div class="sv-locked-gate">'
+        + '<span class="sv-locked-icon">🔒</span>'
+        + f'<p class="sv-locked-title">Complete {first_todo} first</p>'
+        + '<p class="sv-locked-body">This step will unlock once the required steps above are done. '
+        + 'Use the tabs in order, or check the step tracker in the header.</p>'
+        + steps_html
         + '</div>',
         unsafe_allow_html=True,
     )
@@ -3768,89 +3946,143 @@ with tab1:
 # TAB 2 — MEDIA UPLOAD  (NEW)
 # ─────────────────────────────────────────────────────────────────────────────
 with tab2:
-    st.subheader("Step 2: Upload Your Media")
-    st.info(
-        "Upload your own video clips and images. Gemini will analyse them and "
-        "the shot list will prefer your media over any external source. "
-        "You can skip this step and the app will source visuals from Pexels and OpenVerse."
+    st.markdown(
+        '<p class="sv-sidebar-section-label" style="margin-bottom:4px">'
+        'Step 2 of 6 — optional</p>',
+        unsafe_allow_html=True,
     )
-
-    st.markdown("#### 🎬 Video Clips")
+    st.subheader("Upload Your Media")
     st.caption(
-        f"Supported: {', '.join(f'.{e}' for e in ALLOWED_VIDEO_TYPES)} — "
-        f"max **500 MB per file** — multiple files allowed"
+        "Upload your own clips and images. Gemini will analyse them and "
+        "the shot list will prefer them over any external source. "
+        "You can skip this step — the app will source visuals from Pexels and OpenVerse."
     )
-    uploaded_videos = st.file_uploader(
-        "Upload video clips",
-        type=ALLOWED_VIDEO_TYPES,
-        accept_multiple_files=True,
-        key="video_uploader",
-        label_visibility="collapsed",
-    )
-
-    st.markdown("#### 🖼️ Images")
-    st.caption(
-        f"Supported: {', '.join(f'.{e}' for e in ALLOWED_IMAGE_TYPES)} — "
-        f"max **50 MB per file** — multiple files allowed"
-    )
-    uploaded_images = st.file_uploader(
-        "Upload images",
-        type=ALLOWED_IMAGE_TYPES,
-        accept_multiple_files=True,
-        key="image_uploader",
-        label_visibility="collapsed",
-    )
-
-    # Save & validate on change
-    all_media_meta = st.session_state.get("uploaded_media", [])
-
-    if st.button("💾 Save & Analyse Media"):
-        if not api_key:
-            st.warning("⚠️ Gemini API Key required for analysis.")
-        else:
-            saved = []
-            for uf in (uploaded_videos or []):
-                meta = _save_upload(uf, "video")
-                if meta:
-                    saved.append(meta)
-            for uf in (uploaded_images or []):
-                meta = _save_upload(uf, "image")
-                if meta:
-                    saved.append(meta)
-
-            if saved:
-                st.session_state["uploaded_media"] = saved
-                with st.spinner(
-                    f"🔍 Analysing {len(saved)} file(s) with Gemini Vision…"
-                ):
-                    analysis = analyse_uploaded_media(api_key, saved)
-                    st.session_state["media_analysis"] = analysis
-                st.success(f"✅ {len(analysis)} file(s) analysed and ready.")
-            else:
-                st.session_state["uploaded_media"]  = []
-                st.session_state["media_analysis"]  = []
-                st.info("No files saved. Proceeding without user media.")
-
-    # Show analysis results
-    analysis = st.session_state.get("media_analysis", [])
-    if analysis:
-        st.markdown("### 📋 Media Analysis Results")
-        for m in analysis:
-            icon = "🎬" if m.get("media_type") == "video" else "🖼️"
-            tags = ", ".join(m.get("content_tags", []))
-            st.markdown(
-                f'<div class="media-card">'
-                f'{icon} <b>{m["filename"]}</b> ({m["size_mb"]} MB)<br>'
-                f'<b>Subjects:</b> {m.get("dominant_subjects", "—")}<br>'
-                f'<b>Mood:</b> {m.get("mood", "—")} &nbsp;|&nbsp; '
-                f'<b>Suggested use:</b> {m.get("suggested_use", "—")}<br>'
-                f'<b>Tags:</b> {tags if tags else "—"}'
-                f'</div>',
-                unsafe_allow_html=True,
+ 
+    # ── Locked gate ───────────────────────────────────────────────────────────
+    if "topic_param" not in st.session_state:
+        _locked_gate([
+            ("Save Parameters (Tab 1)", False),
+        ])
+    else:
+        st.divider()
+ 
+        # ── Video upload ──────────────────────────────────────────────────────
+        st.markdown("**Video Clips**")
+        st.caption(
+            f"Supported: {', '.join(f'.{e}' for e in ALLOWED_VIDEO_TYPES)} — "
+            f"max 500 MB per file — multiple files allowed"
+        )
+        uploaded_videos = st.file_uploader(
+            "Upload video clips",
+            type=ALLOWED_VIDEO_TYPES,
+            accept_multiple_files=True,
+            key="video_uploader",
+            label_visibility="collapsed",
+        )
+ 
+        # ── Image upload ──────────────────────────────────────────────────────
+        st.markdown("**Images**")
+        st.caption(
+            f"Supported: {', '.join(f'.{e}' for e in ALLOWED_IMAGE_TYPES)} — "
+            f"max 50 MB per file — multiple files allowed"
+        )
+        uploaded_images = st.file_uploader(
+            "Upload images",
+            type=ALLOWED_IMAGE_TYPES,
+            accept_multiple_files=True,
+            key="image_uploader",
+            label_visibility="collapsed",
+        )
+ 
+        st.divider()
+ 
+        col_save, col_skip = st.columns([3, 1])
+        with col_save:
+            save_clicked = st.button(
+                "💾 Save & Analyse Media", use_container_width=True
             )
-        st.success("🎉 **Step 2 Complete!** Click **'3. Research & Script'** to continue.")
-    elif st.session_state.get("uploaded_media") == []:
-        st.success("Skipped — proceeding without user media. Click **'3. Research & Script'**.")
+        with col_skip:
+            skip_clicked = st.button(
+                "Skip →", use_container_width=True
+            )
+ 
+        if skip_clicked:
+            st.session_state["uploaded_media"]  = []
+            st.session_state["media_analysis"]  = []
+            _complete_banner(
+                "Skipped — using Pexels & OpenVerse for visuals.",
+                "Go to 3. Research & Script",
+            )
+ 
+        if save_clicked:
+            if not api_key:
+                st.warning("⚠️ Gemini API Key required for analysis.")
+            else:
+                saved = []
+                for uf in (uploaded_videos or []):
+                    meta = _save_upload(uf, "video")
+                    if meta:
+                        saved.append(meta)
+                for uf in (uploaded_images or []):
+                    meta = _save_upload(uf, "image")
+                    if meta:
+                        saved.append(meta)
+ 
+                if saved:
+                    st.session_state["uploaded_media"] = saved
+                    with st.spinner(
+                        f"🔍 Analysing {len(saved)} file(s) with Gemini Vision…"
+                    ):
+                        analysis = analyse_uploaded_media(api_key, saved)
+                        st.session_state["media_analysis"] = analysis
+                else:
+                    st.session_state["uploaded_media"] = []
+                    st.session_state["media_analysis"] = []
+ 
+        # ── Analysis results ──────────────────────────────────────────────────
+        analysis = st.session_state.get("media_analysis", [])
+        if analysis:
+            st.divider()
+            st.markdown("**Media Analysis Results**")
+            for m in analysis:
+                icon = "🎬" if m.get("media_type") == "video" else "🖼️"
+                tags = m.get("content_tags", [])
+                tags_html = "".join(
+                    f'<span class="sv-media-tag">{t}</span>' for t in tags
+                ) if tags else ""
+                size_mb  = m.get("size_mb", "")
+                dur_secs = m.get("duration_seconds")
+                dur_str  = ""
+                if m.get("media_type") == "video" and dur_secs:
+                    dur_str = f" · {dur_secs:.0f}s"
+                st.markdown(
+                    '<div class="sv-media-item">'
+                    + f'<div class="sv-media-item-icon">{icon}</div>'
+                    + '<div class="sv-media-item-body">'
+                    + f'<p class="sv-media-item-name">{m["filename"]}</p>'
+                    + f'<p class="sv-media-item-row">{size_mb} MB{dur_str}</p>'
+                    + f'<p class="sv-media-item-row">'
+                    + f'<b>Subjects:</b> {m.get("dominant_subjects", "—")}'
+                    + f' &nbsp;·&nbsp; <b>Mood:</b> {m.get("mood", "—")}'
+                    + f'</p>'
+                    + f'<p class="sv-media-item-row">'
+                    + f'<b>Suggested use:</b> {m.get("suggested_use", "—")}'
+                    + f'</p>'
+                    + (f'<div class="sv-media-item-tags">{tags_html}</div>'
+                       if tags_html else "")
+                    + '</div>'
+                    + '</div>',
+                    unsafe_allow_html=True,
+                )
+            _complete_banner(
+                f"{len(analysis)} file(s) analysed and ready.",
+                "Go to 3. Research & Script",
+            )
+        elif st.session_state.get("uploaded_media") == []:
+            _complete_banner(
+                "Skipped — using Pexels & OpenVerse for visuals.",
+                "Go to 3. Research & Script",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3863,7 +4095,9 @@ with tab3:
     st.subheader("Step 3: Research & Script")
 
     if "topic_param" not in st.session_state:
-        st.info("Complete Step 1 first.")
+        _locked_gate([
+            ("Save Parameters (Tab 1)", False),
+        ])
     else:
         media_analysis_t3 = st.session_state.get("media_analysis", [])
         if media_analysis_t3:
@@ -4021,6 +4255,12 @@ with tab3:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4 — VOICEOVER
 # ─────────────────────────────────────────────────────────────────────────────
+if "final_script_text" not in st.session_state:
+        _locked_gate([
+            ("Save Parameters (Tab 1)",  "topic_param" in st.session_state),
+            ("Generate Script (Tab 3)",  False),
+        ])
+        st.stop()
 VOICES = [
     # (edge_tts_id, display_name, style_tag, gender)
     ("en-US-ChristopherNeural", "Christopher", "Deep / Professional", "M"),
@@ -4222,20 +4462,44 @@ with tab5:
     audio_path_v  = st.session_state.get("last_audio_path", "")
     script_text_v = st.session_state.get("final_script_text", "")
 
-    missing = []
-    if not audio_path_v or not os.path.exists(audio_path_v):
-        missing.append("✗ No audio — complete Step 4 first")
-    if not script_text_v:
-        missing.append("✗ No script — complete Step 3 first")
-    if not topic_val:
-        missing.append("✗ No topic — complete Step 1 first")
-    if not api_key:
-        missing.append("✗ Gemini API Key required (sidebar)")
-
-    if missing:
-        for m in missing:
-            st.warning(m)
+    has_audio  = bool(audio_path_v) and os.path.exists(audio_path_v)
+    has_script = bool(script_text_v)
+    has_topic  = bool(topic_val)
+    has_key    = bool(api_key)
+    all_ok     = has_audio and has_script and has_topic and has_key
+ 
+    checks = [
+        (has_topic,  "Topic saved",        "Complete Tab 1 first"),
+        (has_script, "Script ready",       "Complete Tab 3 first"),
+        (has_audio,  "Voiceover ready",    "Complete Tab 4 first"),
+        (has_key,    "Gemini key present", "Add key in sidebar"),
+    ]
+ 
+    rows_html = ""
+    for ok, label, fix in checks:
+        tick     = "✓" if ok else "✗"
+        tick_cls = "sv-preflight-ok" if ok else "sv-preflight-fail"
+        detail   = "" if ok else fix
+        rows_html += (
+            '<div class="sv-preflight-row">'
+            + f'<span class="{tick_cls}">{tick}</span>'
+            + f'<span class="sv-preflight-label">{label}</span>'
+            + (f'<span class="sv-preflight-detail">{detail}</span>' if detail else "")
+            + '</div>'
+        )
+ 
+    st.markdown(
+        '<div class="sv-preflight">'
+        + '<p class="sv-preflight-title">Pre-flight checks</p>'
+        + rows_html
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+ 
+    if not all_ok:
+        st.stop()   # halt rendering of this tab — nothing below runs
     else:
+        # fall through to existing Film-mode trailer / shot list / assembly code
         # Film-mode trailer pre-fetch
         if mode == MODE_FILM:
             st.caption(

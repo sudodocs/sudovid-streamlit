@@ -15,12 +15,9 @@ import numpy as np
 import edge_tts
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-
-# Monkey-patch to fix MoviePy 1.0.3 compatibility with Pillow 10+
-if not hasattr(Image, "ANTIALIAS"):
-    Image.ANTIALIAS = Image.LANCZOS
-
-from moviepy.editor import AudioFileClip, concatenate_videoclips, VideoFileClip
+from moviepy.editor import (
+    AudioFileClip, concatenate_videoclips, VideoFileClip, ImageClip
+)
 from moviepy.video.VideoClip import VideoClip
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,10 +78,13 @@ st.markdown("""
         border: 1px solid var(--border); margin-bottom: 20px;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
     }
+    .media-card {
+        background-color: #f0f9ff; padding: 12px; border-radius: 8px;
+        border: 1px solid #bae6fd; margin-bottom: 8px; font-size: 0.85em;
+    }
     [data-testid="stMetricValue"] { color: var(--primary) !important; }
     </style>
 """, unsafe_allow_html=True)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -93,14 +93,27 @@ MODE_FILM = "Film & Series Analysis"
 MODE_TECH = "Tech News & Investigative"
 MODE_EDU  = "Educational Technology"
 
-# Canvas sizes
-CANVAS_LANDSCAPE = (1280, 720)   # 16:9  long-form
-CANVAS_SHORTS    = (1080, 1920)  # 9:16  Shorts
+CANVAS_LANDSCAPE = (1280, 720)
+CANVAS_SHORTS    = (1080, 1920)
 
 FPS             = 24
 WIKI_THUMB      = "https://en.wikipedia.org/api/rest_v1/page/summary/{}"
 OPENVERSE_BASE  = "https://api.openverse.org/v1/images/"
+PEXELS_IMAGE_BASE = "https://api.pexels.com/v1/search"
+PEXELS_VIDEO_BASE = "https://api.pexels.com/videos/search"
 PROGRESS_FILE   = os.path.join(tempfile.gettempdir(), "sa_video_progress.json")
+
+# Temp directory structure
+TMP_ROOT         = tempfile.gettempdir()
+UPLOAD_DIR       = os.path.join(TMP_ROOT, "sudovid_uploads")
+KEYFRAME_DIR     = os.path.join(TMP_ROOT, "sudovid_keyframes")
+PEXELS_CACHE_DIR = os.path.join(TMP_ROOT, "sudovid_pexels_cache")
+
+for _d in (UPLOAD_DIR, KEYFRAME_DIR, PEXELS_CACHE_DIR):
+    os.makedirs(_d, exist_ok=True)
+
+# Model name — Gemini 3.5 Flash (stable, current flagship as of June 2026)
+GEMINI_MODEL = "gemini-3.5-flash"
 
 _DARK_BG  = (10, 12, 20)
 _ACCENT   = (37,  99, 235)
@@ -108,6 +121,13 @@ _TECH_ACC = (234, 88,  12)
 _EDU_ACC  = (22, 163,  74)
 _TEXT_HI  = (240, 245, 255)
 _TEXT_LO  = (148, 163, 184)
+
+# File limits
+VIDEO_MAX_BYTES = 500 * 1024 * 1024   # 500 MB
+IMAGE_MAX_BYTES =  50 * 1024 * 1024   #  50 MB
+ALLOWED_VIDEO_TYPES = ["mp4", "mov", "webm", "mkv"]
+ALLOWED_IMAGE_TYPES = ["jpg", "jpeg", "png", "webp"]
+
 
 def _canvas(is_shorts: bool) -> tuple:
     return CANVAS_SHORTS if is_shorts else CANVAS_LANDSCAPE
@@ -123,6 +143,7 @@ async def _tts_async(text, voice):
         await communicate.save(f.name)
         return f.name
 
+
 def generate_audio_sync(text, voice):
     try:
         loop = asyncio.new_event_loop()
@@ -134,34 +155,48 @@ def generate_audio_sync(text, voice):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GEMINI WRAPPER
+# GEMINI WRAPPER  — all calls use gemini-3.5-flash
 # ─────────────────────────────────────────────────────────────────────────────
 
-def call_gemini(api_key, prompt, system_instruction="", use_search=False, is_json=False):
+def call_gemini(api_key, prompt, system_instruction="", use_search=False,
+                is_json=False, image_parts=None):
+    """
+    Unified Gemini call. Supports:
+      - Text-only calls (default)
+      - Vision calls: pass image_parts as list of genai.types.Part objects
+      - JSON mode: is_json=True sets response_mime_type
+      - Grounded search: use_search=True (REST API, cannot combine with vision)
+    """
     if not use_search:
         genai.configure(api_key=api_key)
         gen_config = {"response_mime_type": "application/json"} if is_json else None
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            system_instruction=system_instruction,
+            model_name=GEMINI_MODEL,
+            system_instruction=system_instruction or None,
             generation_config=gen_config,
         )
+        contents = []
+        if image_parts:
+            contents.extend(image_parts)
+        contents.append(prompt)
+
         for delay in [1, 2, 4, 8, 16]:
             try:
-                return model.generate_content(prompt).text
+                return model.generate_content(contents).text
             except Exception as e:
                 if delay == 16:
                     return f"Error: {str(e)}"
                 time.sleep(delay)
     else:
+        # Grounded search via REST (cannot send images here)
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-2.5-flash:generateContent?key={api_key}"
+            f"{GEMINI_MODEL}:generateContent?key={api_key}"
         )
         headers = {"Content-Type": "application/json"}
         data = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "systemInstruction": {"parts": [{"text": system_instruction}]},
+            "systemInstruction": {"parts": [{"text": system_instruction or ""}]},
             "tools": [{"google_search": {}}],
         }
         for delay in [1, 2, 4, 8, 16]:
@@ -182,6 +217,267 @@ def call_gemini(api_key, prompt, system_instruction="", use_search=False, is_jso
                 if delay == 16:
                     return f"Error: {str(e)}"
                 time.sleep(delay)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MEDIA UPLOAD HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _save_upload(uploaded_file, media_type: str) -> dict | None:
+    """
+    Validate and persist an uploaded file to UPLOAD_DIR.
+    Returns metadata dict or None on failure.
+    media_type: 'video' | 'image'
+    """
+    if uploaded_file is None:
+        return None
+
+    size = uploaded_file.size
+    limit = VIDEO_MAX_BYTES if media_type == "video" else IMAGE_MAX_BYTES
+    limit_label = "500 MB" if media_type == "video" else "50 MB"
+
+    if size > limit:
+        st.warning(
+            f"⚠️ '{uploaded_file.name}' exceeds the {limit_label} limit "
+            f"({size / 1024 / 1024:.1f} MB) and was skipped."
+        )
+        return None
+
+    ext = uploaded_file.name.rsplit(".", 1)[-1].lower()
+    allowed = ALLOWED_VIDEO_TYPES if media_type == "video" else ALLOWED_IMAGE_TYPES
+    if ext not in allowed:
+        st.warning(f"⚠️ '{uploaded_file.name}' has unsupported extension '.{ext}' — skipped.")
+        return None
+
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", uploaded_file.name)
+    dest = os.path.join(UPLOAD_DIR, safe_name)
+
+    # Avoid re-writing if identical file already saved
+    if not os.path.exists(dest) or os.path.getsize(dest) != size:
+        with open(dest, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+    meta = {
+        "filename":   safe_name,
+        "path":       dest,
+        "size_mb":    round(size / 1024 / 1024, 2),
+        "ext":        ext,
+        "media_type": media_type,
+    }
+    return meta
+
+
+def _extract_video_keyframes(video_path: str, interval_sec: float = 10.0) -> list[str]:
+    """
+    Extract one keyframe every `interval_sec` from a video.
+    Returns list of saved JPEG paths in KEYFRAME_DIR.
+    Caps at 20 frames to stay within Gemini context limits.
+    """
+    frames = []
+    try:
+        vc = VideoFileClip(video_path)
+        duration = vc.duration
+        times = list(np.arange(0, duration, interval_sec))[:20]
+        base = os.path.splitext(os.path.basename(video_path))[0]
+        for i, t in enumerate(times):
+            frame_arr = vc.get_frame(t)
+            img = Image.fromarray(frame_arr.astype(np.uint8))
+            out = os.path.join(KEYFRAME_DIR, f"{base}_kf{i:03d}.jpg")
+            img.save(out, "JPEG", quality=75)
+            frames.append(out)
+        vc.close()
+    except Exception:
+        pass
+    return frames
+
+
+def _build_vision_parts(file_meta: dict) -> list:
+    """
+    Build Gemini vision Parts for a single media file.
+    Videos: send extracted keyframes as inline images.
+    Images: send directly as inline image.
+    Returns list of genai.types.Part objects.
+    """
+    parts = []
+    try:
+        if file_meta["media_type"] == "image":
+            with open(file_meta["path"], "rb") as f:
+                data = f.read()
+            mime = {
+                "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "png": "image/png",  "webp": "image/webp",
+            }.get(file_meta["ext"], "image/jpeg")
+            parts.append({"inline_data": {"mime_type": mime, "data": data}})
+
+        else:  # video — send keyframes
+            kf_paths = _extract_video_keyframes(file_meta["path"], interval_sec=10.0)
+            for kf in kf_paths:
+                with open(kf, "rb") as f:
+                    data = f.read()
+                parts.append({"inline_data": {"mime_type": "image/jpeg", "data": data}})
+
+    except Exception:
+        pass
+    return parts
+
+
+def analyse_uploaded_media(api_key: str, media_list: list[dict]) -> list[dict]:
+    """
+    Send all uploaded files to Gemini Vision for analysis.
+    Returns a list of dicts enriched with AI analysis fields.
+    Each dict: { filename, media_type, duration_seconds (video only),
+                 dominant_subjects, mood, color_palette,
+                 suggested_use, content_tags }
+    """
+    if not media_list:
+        return []
+
+    genai.configure(api_key=api_key)
+
+    # Build combined prompt + all vision parts in ONE call to save quota
+    all_parts = []
+    file_labels = []
+    for i, meta in enumerate(media_list):
+        label = f"FILE_{i+1}: {meta['filename']} ({meta['media_type']}, {meta['size_mb']} MB)"
+        file_labels.append(label)
+        vparts = _build_vision_parts(meta)
+        # Prepend a text marker so Gemini knows which file the frames belong to
+        all_parts.append({"text": label})
+        all_parts.extend(vparts)
+
+    files_block = "\n".join(file_labels)
+    prompt_text = f"""
+You are a professional video editor analysing uploaded media files for a YouTube video.
+
+Files provided:
+{files_block}
+
+For EACH file, provide a structured JSON analysis.
+
+Return ONLY a valid JSON array — one object per file in the same order.
+
+Schema per object:
+{{
+  "filename": "exact filename from the list",
+  "media_type": "video" or "image",
+  "duration_seconds": 0,
+  "dominant_subjects": "1-2 sentence description of main visual subjects",
+  "mood": "one of: cinematic, energetic, calm, dramatic, technical, educational, abstract",
+  "color_palette": "brief description e.g. warm golden tones, cool blues",
+  "suggested_use": "specific recommended use in a YouTube video (hook, b-roll, transition, etc.)",
+  "content_tags": ["tag1", "tag2", "tag3"]
+}}
+
+For images, set duration_seconds to 0.
+For videos, estimate duration from keyframe count (keyframe_interval = 10s).
+Be specific and actionable — these descriptions feed directly into shot list planning.
+"""
+    all_parts.append({"text": prompt_text})
+
+    model = genai.GenerativeModel(
+        model_name=GEMINI_MODEL,
+        generation_config={"response_mime_type": "application/json"},
+    )
+
+    for delay in [1, 2, 4, 8, 16]:
+        try:
+            # Use the low-level Part approach compatible with google-generativeai SDK
+            from google.generativeai.types import content_types
+            response = model.generate_content(all_parts)
+            raw = response.text.replace("```json", "").replace("```", "").strip()
+            analyses = json.loads(raw)
+            # Merge back into media_list metadata
+            result = []
+            for i, meta in enumerate(media_list):
+                merged = dict(meta)
+                if i < len(analyses):
+                    merged.update(analyses[i])
+                result.append(merged)
+            return result
+        except Exception as e:
+            if delay == 16:
+                # Return metadata without AI analysis rather than failing hard
+                return [dict(m, dominant_subjects="", mood="", color_palette="",
+                             suggested_use="", content_tags=[])
+                        for m in media_list]
+            time.sleep(delay)
+
+    return media_list
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PEXELS API  — Images + Videos (unified key)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _pexels_image_url(query: str, pexels_key: str, orientation="landscape") -> str | None:
+    """Fetch highest-quality Pexels image URL for query."""
+    if not pexels_key:
+        return None
+    try:
+        r = requests.get(
+            PEXELS_IMAGE_BASE,
+            headers={"Authorization": pexels_key},
+            params={"query": query, "per_page": 5, "orientation": orientation},
+            timeout=12,
+        ).json()
+        photos = r.get("photos", [])
+        if not photos:
+            return None
+        # Prefer 'original', fall back to 'large2x', then 'large'
+        p = photos[0]["src"]
+        return p.get("original") or p.get("large2x") or p.get("large")
+    except Exception:
+        return None
+
+
+def _pexels_video_download(query: str, pexels_key: str,
+                            out_dir: str, orientation="landscape") -> str | None:
+    """
+    Search Pexels Videos API, download highest-quality MP4 to out_dir.
+    Returns local path or None.
+    Caches by query slug to avoid re-downloading.
+    """
+    if not pexels_key:
+        return None
+
+    safe_q = re.sub(r"[^a-z0-9]", "_", query.lower())[:60]
+    cached = os.path.join(out_dir, f"pexels_{safe_q}.mp4")
+    if os.path.exists(cached) and os.path.getsize(cached) > 100_000:
+        return cached
+
+    try:
+        r = requests.get(
+            PEXELS_VIDEO_BASE,
+            headers={"Authorization": pexels_key},
+            params={"query": query, "per_page": 5, "orientation": orientation},
+            timeout=15,
+        ).json()
+        videos = r.get("videos", [])
+        if not videos:
+            return None
+
+        # Pick best quality: sort video_files by width descending
+        video_files = videos[0].get("video_files", [])
+        video_files_sorted = sorted(
+            [vf for vf in video_files if vf.get("file_type") == "video/mp4"],
+            key=lambda x: x.get("width", 0),
+            reverse=True,
+        )
+        if not video_files_sorted:
+            return None
+
+        download_url = video_files_sorted[0]["link"]
+        resp = requests.get(download_url, stream=True, timeout=60)
+        resp.raise_for_status()
+        with open(cached, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1 << 19):
+                f.write(chunk)
+
+        if os.path.getsize(cached) > 100_000:
+            return cached
+    except Exception:
+        pass
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,12 +512,29 @@ def perform_grounded_research(topic, mode, source_type, angle, length, api_key):
 
 
 def generate_script_package(mode, topic, research, angle, matrix,
-                             source_type, length, api_key):
+                             source_type, length, api_key, media_analysis=None):
     personas = {
         MODE_FILM: "Master YouTube Film Critic. Focus on narrative, character arcs, and thematic depth.",
         MODE_TECH: "Investigative Tech YouTuber. Focus on clarity, impact, and engaging storytelling.",
         MODE_EDU:  "Senior Developer turned YouTuber. Explain things naturally, like a mentor talking to a junior.",
     }
+
+    media_block = ""
+    if media_analysis:
+        lines = []
+        for m in media_analysis:
+            line = (
+                f"  - {m.get('filename')} [{m.get('media_type')}]: "
+                f"{m.get('dominant_subjects', '')} | "
+                f"Mood: {m.get('mood', '')} | "
+                f"Suggested use: {m.get('suggested_use', '')}"
+            )
+            lines.append(line)
+        media_block = (
+            "\nUSER UPLOADED MEDIA (incorporate these naturally into the script structure):\n"
+            + "\n".join(lines)
+        )
+
     prompt = f"""
     TOPIC: {topic}
     SOURCE TYPE: {source_type}
@@ -229,39 +542,32 @@ def generate_script_package(mode, topic, research, angle, matrix,
     CREATOR'S DRAFT / UNIQUE ANGLE: {angle}
     SELECTED MATRIX (Tone/Style): {matrix}
     TARGETED RESEARCH: {research}
+    {media_block}
 
     TASK: You are a professional, conversational YouTube scriptwriter. Your goal is
     to refine the "CREATOR'S DRAFT" into a highly engaging, human-sounding script
     ready for voiceover.
 
     CRITICAL INSTRUCTIONS:
-    1. LENGTH ADAPTATION: The target video length is '{length}'.
-       - If it is a YouTube Short, make the script extremely punchy, fast-paced,
-         and under 150 words total.
-       - If it is Mid-length or Deep Dive, flesh out the arguments with natural pacing.
-    2. HUMAN TONE: The script MUST sound like a real person talking to a camera.
-       Use conversational phrasing, rhetorical questions, and natural transitions.
-       AVOID robotic listicles.
-    3. ANGLE-FIRST REFINEMENT: Preserve the creator's unique perspective. Only use
-       the "TARGETED RESEARCH" to factually support their points. Do NOT dump all
-       the research into the script.
-    4. ALIGNMENT: Match the tone indicated in the "SELECTED MATRIX".
-    5. ESCAPE CHARACTERS: Ensure ALL double quotes inside your script text are
-       properly escaped (e.g., \\"Like this\\") so the JSON remains completely valid.
+    1. LENGTH ADAPTATION: Target video length is '{length}'.
+       - YouTube Short: under 150 words total.
+       - Mid-length or Deep Dive: flesh out arguments with natural pacing.
+    2. HUMAN TONE: Conversational, rhetorical questions, natural transitions. No robotic lists.
+    3. ANGLE-FIRST: Preserve creator's unique perspective. Research supports, not replaces.
+    4. If USER UPLOADED MEDIA is provided, reference those visual moments naturally
+       in the script structure so editors know when to cut to them.
+    5. ESCAPE all double quotes inside script text properly.
 
-    JSON SCHEMA REQUIREMENTS:
+    JSON SCHEMA:
     {{
-      "thematic_resonance": {{ "real_world_event": "String", "explanation": "Detailed parallel based on angle" }},
+      "thematic_resonance": {{ "real_world_event": "String", "explanation": "String" }},
       "character_matrix": [ {{ "name": "Name", "role": "Main/Side", "arc_score": 0, "ghost_vs_truth": "String" }} ],
       "technical_report": {{ "script": 0, "direction": 0, "editing": 0, "acting": 0 }},
-      "viral_title": "String (Catchy YouTube Title)",
-      "hook_script": "String (A punchy, conversational opening hook)",
+      "viral_title": "String",
+      "hook_script": "String",
       "full_script": {{
-          "intro": "Conversational intro flowing from the hook.",
-          "act1": "Conversational Act 1.",
-          "act2": "Conversational Act 2.",
-          "act3": "Conversational Act 3.",
-          "outro": "Natural conclusion and call-to-action."
+          "intro": "String", "act1": "String", "act2": "String",
+          "act3": "String", "outro": "String"
       }},
       "script_outline": ["Brief point 1", "Brief point 2", "Brief point 3"],
       "seo_metadata": {{ "description": "String", "tags": ["tag1", "tag2"] }}
@@ -272,23 +578,23 @@ def generate_script_package(mode, topic, research, angle, matrix,
         clean = result.replace("```json", "").replace("```", "").strip()
         return json.loads(clean)
     except Exception as e:
-        return {"error": f"Synthesis failed to return valid JSON. Error: {str(e)}", "raw": result}
+        return {"error": f"Synthesis failed. Error: {str(e)}", "raw": result}
 
 
 def generate_youtube_bundle(api_key, script_text):
     prompt = f"""
-    Analyze the following YouTube script and create a complete SEO and packaging bundle.
+    Analyse this YouTube script and create a complete SEO and packaging bundle.
 
     SCRIPT:
     {script_text}
 
-    JSON SCHEMA REQUIREMENTS:
+    JSON SCHEMA:
     {{
-        "viral_title": "String (A high-CTR, emotional, and catchy YouTube title)",
-        "description": "String (A full YouTube description including a hook, summary, and placeholder for social links)",
-        "tags": ["tag1", "tag2", "tag3", "etc (Generate 15 highly relevant SEO tags)"],
-        "hashtags": ["#tag1", "#tag2", "#tag3 (Generate 3-5 highly relevant hashtags)"],
-        "thumbnail_prompt": "String (A highly detailed, visual prompt for an AI image generator to create a catchy, high-contrast, professional YouTube thumbnail. Specify lighting, subjects, and mood.)"
+        "viral_title": "String",
+        "description": "String",
+        "tags": ["tag1", "tag2"],
+        "hashtags": ["#tag1", "#tag2"],
+        "thumbnail_prompt": "String"
     }}
     """
     result = call_gemini(api_key, prompt,
@@ -353,14 +659,13 @@ def _mono_font(size):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IMAGE FIT  — handles all aspect ratio combinations without distortion
+# IMAGE FIT
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _fit_to_canvas(img_pil: Image.Image, cw: int, ch: int) -> np.ndarray:
     sw, sh = img_pil.size
     target_ratio = cw / ch
     src_ratio    = sw / sh
-
     both_landscape = src_ratio >= 1.0 and target_ratio >= 1.0
     both_portrait  = src_ratio <  1.0 and target_ratio <  1.0
 
@@ -375,7 +680,6 @@ def _fit_to_canvas(img_pil: Image.Image, cw: int, ch: int) -> np.ndarray:
         scale = min(cw / sw, ch / sh)
         nw, nh = int(sw * scale), int(sh * scale)
         resized = img_pil.resize((nw, nh), Image.LANCZOS)
-
         bg_scale = max(cw / sw, ch / sh)
         bg_w = max(int(sw * bg_scale), cw)
         bg_h = max(int(sh * bg_scale), ch)
@@ -386,7 +690,6 @@ def _fit_to_canvas(img_pil: Image.Image, cw: int, ch: int) -> np.ndarray:
         bg = bg.filter(ImageFilter.GaussianBlur(radius=22))
         bg_arr = (np.array(bg) * 0.30).astype(np.uint8)
         canvas = Image.fromarray(bg_arr)
-
         px = (cw - nw) // 2
         py = (ch - nh) // 2
         canvas.paste(resized, (px, py))
@@ -406,20 +709,16 @@ def _fetch_array(url: str, cw: int, ch: int) -> np.ndarray | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EXTERNAL IMAGE SOURCES
+# EXTERNAL IMAGE SOURCES  (key-free fallbacks)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _openverse_image(query: str, page: int = 1) -> str | None:
     try:
         r = requests.get(
             OPENVERSE_BASE,
-            params={
-                "q":             query,
-                "license_type":  "commercial",
-                "page_size":     5,
-                "page":          page,
-            },
-            headers={"User-Agent": "SudoVid/1.0"},
+            params={"q": query, "license_type": "commercial",
+                    "page_size": 5, "page": page},
+            headers={"User-Agent": "SudoVid/2.0"},
             timeout=12,
         ).json()
         results = r.get("results", [])
@@ -454,58 +753,292 @@ def _wiki_image_multi(queries: list[str]) -> str | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UNIVERSAL TRAILER DOWNLOADER
+# TRAILER DOWNLOAD & SEGMENTATION  (Film mode)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _download_custom_video(video_url: str, out_path: str) -> bool:
-    """Downloads a video from almost any site (IMDb, YouTube, etc.) using yt-dlp."""
+def _hd_trailers_slug(title: str) -> str:
+    slug = title.lower().strip()
+    slug = re.sub(r"[':!?,\.]", "", slug)
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
+    slug = re.sub(r"\s+", "-", slug)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug
+
+
+def _parse_hd_trailers_page(html: str) -> str | None:
+    try:
+        from bs4 import BeautifulSoup
+        import json as _json
+        soup = BeautifulSoup(html, "html.parser")
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = _json.loads(script.string or "")
+                url  = (data.get("trailer") or {}).get("contentUrl", "")
+                if url and "movietrailers.apple.com" in url:
+                    return re.sub(r"h(1080|480)p", "h720p", url)
+            except Exception:
+                pass
+        for quality in ("trailer-quality-720", "trailer-quality-1080", "trailer-quality-480"):
+            for td in soup.find_all("td", class_=quality):
+                a = td.find("a", href=re.compile(r"movietrailers\.apple\.com"))
+                if a:
+                    return a["href"]
+        for a in soup.find_all("a", href=re.compile(r"movietrailers\.apple\.com.*h720p")):
+            return a["href"]
+    except Exception:
+        pass
+    return None
+
+
+def _download_apple_cdn(apple_url: str, out_path: str) -> bool:
+    try:
+        hdrs = {"User-Agent": "QuickTime/7.7.3 (qtver=7.7.3;os=Windows NT 6.1)"}
+        with requests.get(apple_url, headers=hdrs, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(out_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 19):
+                    f.write(chunk)
+        return os.path.exists(out_path) and os.path.getsize(out_path) > 100_000
+    except Exception:
+        return False
+
+
+def _apple_trailers_xml(topic: str) -> str | None:
+    import difflib
+    import xml.etree.ElementTree as ET
+    XML_URL = "https://trailers.apple.com/trailers/home/xml/current.xml"
+    cache = _apple_trailers_xml.__dict__.setdefault("_cache", {})
+    xml_text = cache.get(XML_URL)
+    if not xml_text:
+        try:
+            r = requests.get(XML_URL, headers={"User-Agent": "QuickTime/7.7.3"}, timeout=20)
+            r.raise_for_status()
+            xml_text = r.text
+            cache[XML_URL] = xml_text
+        except Exception:
+            return None
+    try:
+        root = ET.fromstring(xml_text)
+        topic_low = topic.lower()
+        best_url = None
+        best_score = 0.0
+        for movie in root.findall(".//movieinfo"):
+            title_el = movie.find("info/title")
+            if title_el is None or not title_el.text:
+                continue
+            score = difflib.SequenceMatcher(None, topic_low, title_el.text.lower()).ratio()
+            if score < 0.60:
+                continue
+            video_el = movie.find("video")
+            if video_el is not None:
+                for quality in ("hd720p", "hd1080p", "hd480p"):
+                    src_el = video_el.find(f'.//videosize[@type="{quality}"]/src')
+                    if src_el is not None and src_el.text and "movietrailers.apple.com" in src_el.text:
+                        if score > best_score:
+                            best_score = score
+                            best_url = src_el.text
+                        break
+    except ET.ParseError:
+        return None
+    return best_url
+
+
+def _imdb_trailer_url(topic: str) -> str | None:
     try:
         import yt_dlp
-        
-        # Kill the phantom cache: force delete the old file
-        if os.path.exists(out_path):
-            try: os.remove(out_path)
-            except: pass
-            
+        opts = {"quiet": True, "no_warnings": True, "simulate": True, "forceurl": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            search_results = ydl.extract_info(f"ytsearch:{topic} trailer imdb", download=False)
+            if search_results and "entries" in search_results and search_results["entries"]:
+                return search_results["entries"][0]["url"]
+    except Exception:
+        pass
+    return None
+
+
+def _download_imdb_trailer(imdb_video_url: str, out_path: str) -> bool:
+    try:
+        import yt_dlp
         opts = {
             "format": "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]",
-            "outtmpl":             out_path,
-            "quiet":               True,
-            "no_warnings":         True,
-            "merge_output_format": "mp4",
-            "overwrites":          True,  # Force overwrite
+            "outtmpl": out_path, "quiet": True, "no_warnings": True,
+            "merge_output_format": "mp4", "retries": 5, "socket_timeout": 30,
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([video_url])
-            
+            ydl.download([imdb_video_url])
         return os.path.exists(out_path) and os.path.getsize(out_path) > 100_000
-    except Exception as e:
-        st.error(f"Download failed: {e}")
+    except Exception:
         return False
+
+
+def _internet_archive_trailer(topic: str) -> str | None:
+    try:
+        r = requests.get(
+            "https://archive.org/advancedsearch.php",
+            params={
+                "q": (f'title:("{topic}") AND '
+                      '(subject:"trailer" OR subject:"movie trailer") AND mediatype:movies'),
+                "fl[]": ["identifier", "title"], "rows": 5, "output": "json",
+            },
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=15,
+        )
+        r.raise_for_status()
+        docs = r.json().get("response", {}).get("docs", [])
+        for doc in docs:
+            identifier = doc.get("identifier", "")
+            if not identifier:
+                continue
+            meta = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
+            files = meta.get("files", [])
+            for name_filter, exts in (
+                (lambda n: "trailer" in n, ("mp4", "mov")),
+                (lambda n: True,           ("mp4",)),
+            ):
+                for ext in exts:
+                    for f in files:
+                        fname = f.get("name", "")
+                        if fname.lower().endswith(f".{ext}") and name_filter(fname.lower()):
+                            return f"https://archive.org/download/{identifier}/{fname}"
+    except Exception:
+        pass
+    return None
+
+
+def _download_trailer(topic: str) -> str | None:
+    safe_name = re.sub(r"[^a-z0-9]", "_", topic.lower())
+    out_path  = os.path.join(TMP_ROOT, f"trailer_{safe_name}.mov")
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 100_000:
+        return out_path
+    try:
+        slug = _hd_trailers_slug(topic)
+        r = requests.get(
+            f"https://www.hd-trailers.net/movie/{slug}/",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SudoVid/2.0)"},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            apple_url = _parse_hd_trailers_page(r.text)
+            if apple_url and _download_apple_cdn(apple_url, out_path):
+                return out_path
+    except Exception:
+        pass
+    try:
+        apple_url = _apple_trailers_xml(topic)
+        if apple_url and _download_apple_cdn(apple_url, out_path):
+            return out_path
+    except Exception:
+        pass
+    try:
+        imdb_url = _imdb_trailer_url(topic)
+        if imdb_url:
+            out_path_mp4 = out_path.replace(".mov", ".mp4")
+            if _download_imdb_trailer(imdb_url, out_path_mp4):
+                return out_path_mp4
+    except Exception:
+        pass
+    try:
+        archive_url = _internet_archive_trailer(topic)
+        if archive_url:
+            out_path_mp4 = out_path.replace(".mov", "_archive.mp4")
+            if _download_apple_cdn(archive_url, out_path_mp4):
+                return out_path_mp4
+    except Exception:
+        pass
+    return None
+
+
+def _extract_trailer_segments(video_path: str, num_segments: int = 6,
+                               seg_duration: float = 8.0) -> list:
+    try:
+        vc = VideoFileClip(video_path)
+        total = vc.duration
+        vc.close()
+        usable_start = 2.0
+        usable_end   = max(usable_start + seg_duration, total - 5.0)
+        usable_range = usable_end - usable_start - seg_duration
+        if usable_range <= 0:
+            return []
+        step = usable_range / max(num_segments - 1, 1)
+        segs = []
+        for i in range(num_segments):
+            start = usable_start + i * step
+            end   = min(start + seg_duration, usable_end)
+            if end - start >= 3.0:
+                segs.append((round(start, 1), round(end, 1)))
+        return segs
+    except Exception:
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# USER UPLOAD VIDEO — loop to fill duration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _loop_video_clip(video_path: str, target_duration: float, cw: int, ch: int):
+    """
+    Load a user-uploaded video, resize to canvas, loop it to fill target_duration.
+    Returns a MoviePy VideoClip.
+    """
+    vc = VideoFileClip(video_path)
+
+    # Resize to canvas
+    if vc.w != cw or vc.h != ch:
+        src_ratio = vc.w / vc.h
+        tgt_ratio = cw / ch
+        both_l = src_ratio >= 1.0 and tgt_ratio >= 1.0
+        both_p = src_ratio <  1.0 and tgt_ratio <  1.0
+        if both_l or both_p:
+            scale = max(cw / vc.w, ch / vc.h)
+            vc = vc.resize(scale).crop(x_center=vc.w * scale / 2,
+                                       y_center=vc.h * scale / 2,
+                                       width=cw, height=ch)
+        else:
+            scale = min(cw / vc.w, ch / vc.h)
+            vc = vc.resize(scale)
+            # Pad with blurred background
+            frame0 = Image.fromarray(vc.get_frame(0).astype(np.uint8))
+            bg_arr = _fit_to_canvas(frame0, cw, ch)
+            bg_clip = ImageClip(bg_arr, duration=target_duration)
+            from moviepy.editor import CompositeVideoClip
+            ox = (cw - vc.w) // 2
+            oy = (ch - vc.h) // 2
+            vc = CompositeVideoClip(
+                [bg_clip, vc.set_position((ox, oy))],
+                size=(cw, ch)
+            ).set_duration(min(vc.duration, target_duration))
+
+    clip_dur = vc.duration
+    if clip_dur <= 0:
+        vc.close()
+        raise ValueError("Video has zero duration")
+
+    if clip_dur >= target_duration:
+        return vc.subclip(0, target_duration)
+
+    # Loop: tile the clip until we exceed target_duration
+    loops_needed = math.ceil(target_duration / clip_dur)
+    from moviepy.editor import concatenate_videoclips
+    looped = concatenate_videoclips([vc] * loops_needed, method="compose")
+    return looped.subclip(0, target_duration)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CREDIT OVERLAY
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _add_credit_overlay(frame_arr: np.ndarray,
-                         credit_text: str,
-                         is_shorts: bool,
-                         cw: int, ch: int) -> np.ndarray:
+def _add_credit_overlay(frame_arr: np.ndarray, credit_text: str,
+                         is_shorts: bool, cw: int, ch: int) -> np.ndarray:
     if not credit_text:
         return frame_arr
     img  = Image.fromarray(frame_arr.astype(np.uint8)).convert("RGBA")
     overlay = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-
     font_size = max(18, ch // 58)
     font = _font(font_size)
-
     bbox  = draw.textbbox((0, 0), credit_text, font=font)
     tw    = bbox[2] - bbox[0]
     th    = bbox[3] - bbox[1]
     pad_x, pad_y = 14, 7
-
     if is_shorts:
         tx = (cw - tw) // 2
         ty = int(ch * 0.028)
@@ -517,7 +1050,6 @@ def _add_credit_overlay(frame_arr: np.ndarray,
         tx = int(cw * 0.015)
         ty = int(ch * 0.938)
         draw.text((tx, ty), credit_text, font=font, fill=(255, 255, 255, 175))
-
     composited = Image.alpha_composite(img, overlay).convert("RGB")
     return np.array(composited)
 
@@ -545,10 +1077,7 @@ def make_text_card(line1, line2="", label="", mode=MODE_FILM, cw=1280, ch=720):
     accent = _accent_for_mode(mode)
     img, draw = _base_card(accent, cw, ch)
     cy = ch // 2
-    
-    # Scale text by width to prevent cutoffs on Shorts
-    scale = cw / 1280 
-    
+    scale = ch / 720
     if label:
         draw.text((cw // 2, cy - int(100 * scale)), label.upper(),
                   font=_font(max(16, int(22 * scale))), fill=accent, anchor="mm")
@@ -565,9 +1094,7 @@ def make_text_card(line1, line2="", label="", mode=MODE_FILM, cw=1280, ch=720):
 def make_chapter_card(chapter_num, title, mode=MODE_FILM, cw=1280, ch=720):
     accent = _accent_for_mode(mode)
     img, draw = _base_card(accent, cw, ch)
-    
-    scale = cw / 1280 
-    
+    scale = ch / 720
     draw.text((cw - int(60 * scale), ch - int(40 * scale)), f"#{chapter_num}",
               font=_font(max(48, int(96 * scale)), bold=True),
               fill=(*accent, 30), anchor="rb")
@@ -583,9 +1110,7 @@ def make_chapter_card(chapter_num, title, mode=MODE_FILM, cw=1280, ch=720):
 def make_stat_card(stat, description, mode=MODE_TECH, cw=1280, ch=720):
     accent = _accent_for_mode(mode)
     img, draw = _base_card(accent, cw, ch)
-    
-    scale = cw / 1280 
-    
+    scale = ch / 720
     draw.text((cw // 2, ch // 2 - int(60 * scale)), stat,
               font=_font(max(48, int(110 * scale)), bold=True),
               fill=_TEXT_HI, anchor="mm")
@@ -597,9 +1122,7 @@ def make_stat_card(stat, description, mode=MODE_TECH, cw=1280, ch=720):
 def make_code_card(snippet, language="", cw=1280, ch=720):
     img  = Image.new("RGB", (cw, ch), (18, 20, 30))
     draw = ImageDraw.Draw(img)
-    
-    scale = cw / 1280 
-    
+    scale = ch / 720
     header_h = int(44 * scale)
     draw.rectangle([(0, 0), (cw, header_h)], fill=(30, 32, 44))
     dot_r = int(7 * scale)
@@ -615,15 +1138,18 @@ def make_code_card(snippet, language="", cw=1280, ch=720):
     lines  = snippet.strip().split("\n")[:18]
     y      = header_h + int(10 * scale)
     for i, line in enumerate(lines):
-        draw.text((int(50 * scale), y), str(i + 1), font=mf,
-                  fill=(64, 74, 94), anchor="rm")
+        draw.text((int(50 * scale), y), str(i + 1), font=mf, fill=(64, 74, 94), anchor="rm")
         stripped = line.lstrip()
-        if stripped.startswith(("#", "//")):               col = (106, 153, 85)
+        if stripped.startswith(("#", "//")):
+            col = (106, 153, 85)
         elif any(stripped.startswith(k) for k in (
             "def ", "class ", "import ", "from ", "return ",
-            "const ", "let ", "var ", "function ", "async ")): col = (197, 134, 192)
-        elif stripped.startswith(("'", '"', "`", "f'")):   col = (206, 145, 120)
-        else:                                               col = _TEXT_HI
+            "const ", "let ", "var ", "function ", "async ")):
+            col = (197, 134, 192)
+        elif stripped.startswith(("'", '"', "`", "f'")):
+            col = (206, 145, 120)
+        else:
+            col = _TEXT_HI
         draw.text((int(64 * scale), y), line, font=mf, fill=col)
         y += line_h
     return np.array(img)
@@ -634,36 +1160,59 @@ def make_code_card(snippet, language="", cw=1280, ch=720):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _zoom_clip(arr: np.ndarray, duration: float, zoom_in: bool = True):
-    pil = Image.fromarray(arr.astype(np.uint8))
+    pil = Image.fromarray(arr)
     h0, w0 = arr.shape[:2]
 
     def make_frame(t):
         p     = t / max(duration, 0.001)
         scale = 1.0 + 0.04 * (p if zoom_in else (1 - p))
         nw, nh = int(w0 * scale), int(h0 * scale)
-        res    = np.array(pil.resize((nw, nh), Image.BILINEAR))
-        x0_    = (nw - w0) // 2
-        y0_    = (nh - h0) // 2
-        return res[y0_:y0_ + h0, x0_:x0_ + w0].astype(np.float64)
+        res   = np.array(pil.resize((nw, nh), Image.BILINEAR))
+        x0_ = (nw - w0) // 2
+        y0_ = (nh - h0) // 2
+        return res[y0_:y0_ + h0, x0_:x0_ + w0]
 
     return VideoClip(make_frame, duration=duration)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SHOT LIST PROMPTS
+# SHOT LIST PROMPTS  — now media-aware
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _media_analysis_block(media_analysis: list[dict]) -> str:
+    """Format uploaded media analysis for injection into shot prompts."""
+    if not media_analysis:
+        return ""
+    lines = ["USER UPLOADED MEDIA (PREFER these over external sources):"]
+    for m in media_analysis:
+        tags = ", ".join(m.get("content_tags", []))
+        dur  = f" | {m.get('duration_seconds', 0):.0f}s" if m.get("media_type") == "video" else ""
+        lines.append(
+            f"  filename={m['filename']} type={m['media_type']}{dur} | "
+            f"{m.get('dominant_subjects', '')} | mood={m.get('mood', '')} | "
+            f"use={m.get('suggested_use', '')} | tags=[{tags}]"
+        )
+    lines.append(
+        "\nINSTRUCTION: Use 'user_upload_video' or 'user_upload_image' shot types "
+        "and set 'upload_filename' to the exact filename above for any shot where "
+        "an uploaded file is a good visual match. Only fall back to pexels_video, "
+        "pexels_image, or generated cards when no upload fits."
+    )
+    return "\n".join(lines)
+
+
 def _shot_prompt_film(topic, source_type, matrix, character_names,
-                      script_outline, script_text,
-                      has_trailer: bool, is_shorts: bool):
-    char_list = ", ".join(character_names) if character_names else "none"
-    outline   = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(script_outline))
+                      script_outline, script_text, has_trailer, is_shorts,
+                      media_analysis):
+    char_list  = ", ".join(character_names) if character_names else "none"
+    outline    = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(script_outline))
+    media_blk  = _media_analysis_block(media_analysis)
 
     if is_shorts:
         trailer_note = (
-            'TRAILER AVAILABLE: Yes — prefer "trailer_clip" for all action/plot moments.'
+            'TRAILER AVAILABLE: Yes — use "trailer_clip" for action/plot moments.'
             if has_trailer else
-            'TRAILER AVAILABLE: No — use tmdb_backdrop and tmdb_poster as primary visuals.'
+            'TRAILER AVAILABLE: No — use tmdb_backdrop and tmdb_poster as primary.'
         )
         return f"""
 You are a video editor cutting a YouTube SHORT (vertical 9:16, under 60 seconds).
@@ -673,35 +1222,45 @@ FILM TITLE: {topic}
 KNOWN CAST: {char_list}
 SCRIPT: {script_text}
 
-Produce a shot list of EXACTLY 3-6 segments, each 5-12 seconds.
+{media_blk}
 
-Visual types allowed for Shorts:
-  "trailer_clip"  — segment from the official trailer (PREFERRED if trailer available)
-  "tmdb_poster"   — official film poster
-  "tmdb_backdrop" — cinematic scene still
-  "text_card"     — punchy one-liner card (max 1 in the whole list)
+Produce EXACTLY 3-6 segments, each 5-12 seconds.
+
+Visual types for Shorts:
+  "user_upload_video"  — user-provided video clip (HIGHEST PRIORITY if filename matches)
+  "user_upload_image"  — user-provided image (HIGHEST PRIORITY if filename matches)
+  "trailer_clip"       — official trailer segment
+  "tmdb_poster"        — official film poster
+  "tmdb_backdrop"      — cinematic scene still
+  "text_card"          — punchy one-liner (max 1 total)
 
 Return ONLY a valid JSON array. Schema per item:
 {{
-  "segment_index": 0, "type": "trailer_clip", "duration_seconds": 8,
+  "segment_index": 0,
+  "type": "user_upload_video",
+  "upload_filename": "",
+  "duration_seconds": 8,
   "trailer_timestamp": 0,
-  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
-  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
-  "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
+  "pexels_query": "",
+  "cast_name": "",
+  "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "",
+  "chapter_num": 0, "chapter_title": "",
+  "wiki_title": "",
+  "code_snippet": "", "code_language": "",
+  "note": ""
 }}
 
 Rules:
-- trailer_timestamp: approximate second in the trailer to cut from (spread across trailer).
-- If trailer available: at least 60% of clips must be trailer_clip.
-- If trailer not available: use tmdb_backdrop for all visual clips.
-- Sum of duration_seconds must be between 30 and 58 seconds total.
-- DO NOT use chapter_card, stat_card, code_card, or pexels_broll for Shorts.
+- upload_filename: exact filename from USER UPLOADED MEDIA list, or "" if not using an upload.
+- Sum of duration_seconds must be 30-58 seconds total.
+- Prefer user uploads where mood/content matches the script moment.
 """
     else:
         trailer_note = (
-            'TRAILER AVAILABLE: Yes — use "trailer_clip" for high-energy action/plot moments.'
+            'TRAILER AVAILABLE: Yes — use "trailer_clip" for high-energy moments.'
             if has_trailer else
-            'TRAILER AVAILABLE: No — use tmdb_backdrop and pexels_broll for visual coverage.'
+            'TRAILER AVAILABLE: No — skip trailer_clip entirely.'
         )
         return f"""
 You are a video editor planning a YouTube FILM / SERIES REVIEW video.
@@ -710,50 +1269,59 @@ FILM TITLE: {topic}
 SOURCE TYPE: {source_type}
 TONE MATRIX: {matrix}
 {trailer_note}
-KNOWN CAST MEMBERS: {char_list}
+KNOWN CAST: {char_list}
 SCRIPT OUTLINE:
 {outline}
 
 SCRIPT:
 {script_text}
 
-Produce a shot list of 8-20 segments (15-35s each).
-For each segment pick ONE visual type:
+{media_blk}
 
-  "trailer_clip"  — segment from the official trailer (use for plot/action/emotional peaks)
-  "tmdb_poster"   — official film poster (use for opening title card only)
-  "tmdb_backdrop" — cinematic scene still (use for analytical/reflective moments)
-  "tmdb_cast"     — headshot of a named cast member (only names from KNOWN CAST MEMBERS)
-  "pexels_broll"  — cinematic B-roll SPECIFIC to this film's world:
-                    queries must reference the film's setting, tone, or themes
-                    (e.g. "lone astronaut deep space silence" not "sci-fi movie")
-  "text_card"     — styled card (RT score, box office, key review line)
-  "stat_card"     — big-number card ("$240M opening weekend", "8.4/10 IMDb")
-  "chapter_card"  — act transition card from script outline (max 3 total)
+Produce 8-20 segments (15-35s each). Visual types:
+  "user_upload_video"  — user-provided video (HIGHEST PRIORITY)
+  "user_upload_image"  — user-provided image (HIGHEST PRIORITY)
+  "trailer_clip"       — official trailer segment
+  "tmdb_poster"        — film poster (opening title only)
+  "tmdb_backdrop"      — scene still
+  "tmdb_cast"          — cast headshot (names from KNOWN CAST only)
+  "pexels_video"       — Pexels cinematic B-roll video (specific query)
+  "pexels_image"       — Pexels still image (specific query)
+  "text_card"          — styled text graphic
+  "stat_card"          — big-number card
+  "chapter_card"       — act transition (max 3 total)
 
-Return ONLY a valid JSON array. No markdown. Schema per item:
+Return ONLY a valid JSON array. Schema per item:
 {{
-  "segment_index": 0, "type": "trailer_clip", "duration_seconds": 12,
+  "segment_index": 0,
+  "type": "user_upload_video",
+  "upload_filename": "",
+  "duration_seconds": 20,
   "trailer_timestamp": 0,
-  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
-  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
-  "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
+  "pexels_query": "",
+  "cast_name": "",
+  "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "",
+  "chapter_num": 0, "chapter_title": "",
+  "wiki_title": "",
+  "code_snippet": "", "code_language": "",
+  "note": ""
 }}
 
 Rules:
-- trailer_timestamp: spread timestamps across full trailer (avoid first 2s and last 5s).
-- pexels_query: 4-6 words SPECIFIC to this film's world and atmosphere, NOT genre labels.
-  Good: "lone astronaut deep space silence"  Bad: "sci-fi movie space"
-- cast_name: exact name from KNOWN CAST MEMBERS only.
-- If trailer available: use trailer_clip for 30-50% of clips.
-- If trailer not available: skip trailer_clip entirely.
-- Mix: at least 2 tmdb types, 2 text/stat cards, 1 chapter_card.
-- Sum of duration_seconds ≈ word_count / 130 * 60 seconds.
+- upload_filename: exact filename or "".
+- pexels_query: 4-6 words SPECIFIC to this film's world (not genre labels).
+- cast_name: exact name from KNOWN CAST only.
+- Prioritise user_upload types first, then trailer_clip (30-50%), then TMDB/Pexels.
+- Mix: at least 2 text/stat cards, 1 chapter_card.
+- Sum ≈ word_count / 130 * 60 seconds.
 """
 
 
-def _shot_prompt_tech(topic, matrix, script_outline, script_text, is_shorts):
-    outline = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(script_outline))
+def _shot_prompt_tech(topic, matrix, script_outline, script_text, is_shorts, media_analysis):
+    outline   = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(script_outline))
+    media_blk = _media_analysis_block(media_analysis)
+
     if is_shorts:
         return f"""
 You are a video editor cutting a YouTube SHORT (9:16, under 60 seconds).
@@ -761,20 +1329,23 @@ You are a video editor cutting a YouTube SHORT (9:16, under 60 seconds).
 TOPIC: {topic}
 SCRIPT: {script_text}
 
-Produce 3-6 segments, each 5-12 seconds.
-Types allowed: "pexels_broll", "text_card", "stat_card" (max 1 each of text/stat).
+{media_blk}
+
+Produce 3-6 segments, 5-12 seconds each.
+Types: "user_upload_video", "user_upload_image", "pexels_video", "pexels_image",
+       "text_card", "stat_card" (max 1 each of text/stat).
 
 Return ONLY a valid JSON array. Schema:
 {{
-  "segment_index": 0, "type": "pexels_broll", "duration_seconds": 8,
-  "trailer_timestamp": 0,
-  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
-  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
+  "segment_index": 0, "type": "pexels_video", "upload_filename": "",
+  "duration_seconds": 8, "trailer_timestamp": 0,
+  "pexels_query": "", "cast_name": "",
+  "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "",
+  "chapter_num": 0, "chapter_title": "",
   "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
 }}
-Rules:
-- pexels_query: 4-6 specific words (e.g. "server room crash red alert", not "technology")
-- Sum 30-58 seconds total.
+Rules: upload_filename = exact filename or "". pexels_query 4-6 specific words. Sum 30-58s.
 """
     else:
         return f"""
@@ -788,33 +1359,41 @@ SCRIPT OUTLINE:
 SCRIPT:
 {script_text}
 
-Produce 8-20 segments (15-35s each). Types:
+{media_blk}
 
-  "pexels_broll"  — cinematic tech B-roll SPECIFIC to this incident/product
-                    (e.g. "crowdstrike blue screen windows crash", not "computer error")
-  "wiki_image"    — Wikipedia image for a company, product, or person mentioned
-  "text_card"     — headline, key quote, timeline event, error message
-  "stat_card"     — big-number impact card
-  "chapter_card"  — section transition (max 3 total)
+Produce 8-20 segments (15-35s each). Types:
+  "user_upload_video"  — user clip (HIGHEST PRIORITY)
+  "user_upload_image"  — user image (HIGHEST PRIORITY)
+  "pexels_video"       — Pexels cinematic video (specific query)
+  "pexels_image"       — Pexels still image (specific query)
+  "wiki_image"         — Wikipedia image for company/product/person
+  "text_card"          — headline, quote, timeline event
+  "stat_card"          — big-number impact card
+  "chapter_card"       — section transition (max 3 total)
 
 Return ONLY a valid JSON array. Schema:
 {{
-  "segment_index": 0, "type": "pexels_broll", "duration_seconds": 20,
-  "trailer_timestamp": 0,
-  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
-  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
+  "segment_index": 0, "type": "pexels_video", "upload_filename": "",
+  "duration_seconds": 20, "trailer_timestamp": 0,
+  "pexels_query": "", "cast_name": "",
+  "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "",
+  "chapter_num": 0, "chapter_title": "",
   "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
 }}
 Rules:
-- pexels_query: 4-6 specific words tied to this exact topic, NOT generic tech labels.
+- upload_filename = exact filename or "".
+- pexels_query: 4-6 specific words tied to this exact topic.
 - wiki_title: exact Wikipedia article title.
-- Mix: at least 40% pexels_broll, 2 stat_cards, 1 chapter_card.
+- Mix: at least 40% pexels/upload, 2 stat_cards, 1 chapter_card.
 - Sum ≈ word_count / 130 * 60 seconds.
 """
 
 
-def _shot_prompt_edu(topic, matrix, script_outline, script_text, is_shorts):
-    outline = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(script_outline))
+def _shot_prompt_edu(topic, matrix, script_outline, script_text, is_shorts, media_analysis):
+    outline   = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(script_outline))
+    media_blk = _media_analysis_block(media_analysis)
+
     if is_shorts:
         return f"""
 You are a video editor cutting a YouTube SHORT (9:16, under 60 seconds).
@@ -822,18 +1401,23 @@ You are a video editor cutting a YouTube SHORT (9:16, under 60 seconds).
 TOPIC: {topic}
 SCRIPT: {script_text}
 
+{media_blk}
+
 Produce 3-6 segments, 5-12 seconds each.
-Types: "pexels_broll", "text_card", "code_card" (max 1 code_card).
+Types: "user_upload_video", "user_upload_image", "pexels_video", "pexels_image",
+       "text_card", "code_card" (max 1 code_card).
 
 Return ONLY a valid JSON array. Schema:
 {{
-  "segment_index": 0, "type": "pexels_broll", "duration_seconds": 8,
-  "trailer_timestamp": 0,
-  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
-  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
+  "segment_index": 0, "type": "pexels_video", "upload_filename": "",
+  "duration_seconds": 8, "trailer_timestamp": 0,
+  "pexels_query": "", "cast_name": "",
+  "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "",
+  "chapter_num": 0, "chapter_title": "",
   "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
 }}
-Rules: pexels_query 4-6 specific words. Sum 30-58s total.
+Rules: upload_filename = exact filename or "". pexels_query 4-6 specific words. Sum 30-58s.
 """
     else:
         return f"""
@@ -847,26 +1431,33 @@ SCRIPT OUTLINE:
 SCRIPT:
 {script_text}
 
-Produce 8-20 segments (15-35s each). Types:
+{media_blk}
 
-  "pexels_broll"  — concept B-roll SPECIFIC to this topic's visual world
-  "wiki_image"    — Wikipedia image for a concept, person, or tool mentioned
-  "text_card"     — definition, key term, or important takeaway
-  "code_card"     — code snippet (only when script references actual code)
-  "stat_card"     — big-number fact
-  "chapter_card"  — section transition (max 3 total)
+Produce 8-20 segments (15-35s each). Types:
+  "user_upload_video"  — user clip (HIGHEST PRIORITY)
+  "user_upload_image"  — user image (HIGHEST PRIORITY)
+  "pexels_video"       — Pexels concept video (specific query)
+  "pexels_image"       — Pexels still (specific query)
+  "wiki_image"         — Wikipedia image for concept/person/tool
+  "text_card"          — definition, key term, takeaway
+  "code_card"          — code snippet (only when script references code)
+  "stat_card"          — big-number fact
+  "chapter_card"       — section transition (max 3 total)
 
 Return ONLY a valid JSON array. Schema:
 {{
-  "segment_index": 0, "type": "pexels_broll", "duration_seconds": 20,
-  "trailer_timestamp": 0,
-  "pexels_query": "", "cast_name": "", "text_line1": "", "text_line2": "",
-  "stat_value": "", "stat_desc": "", "chapter_num": 0, "chapter_title": "",
+  "segment_index": 0, "type": "pexels_video", "upload_filename": "",
+  "duration_seconds": 20, "trailer_timestamp": 0,
+  "pexels_query": "", "cast_name": "",
+  "text_line1": "", "text_line2": "",
+  "stat_value": "", "stat_desc": "",
+  "chapter_num": 0, "chapter_title": "",
   "wiki_title": "", "code_snippet": "", "code_language": "", "note": ""
 }}
 Rules:
-- pexels_query: 4-6 specific words tied to this exact concept.
-- Mix: at least 30% pexels_broll, 2 text/stat cards, 1 chapter_card.
+- upload_filename = exact filename or "".
+- pexels_query: 4-6 specific words for this concept.
+- Mix: at least 30% upload/pexels, 2 text/stat cards, 1 chapter_card.
 - Sum ≈ word_count / 130 * 60 seconds.
 """
 
@@ -883,22 +1474,23 @@ def generate_shot_list(api_key: str, has_trailer: bool, is_shorts: bool) -> list
     script_text    = st.session_state.get("final_script_text", "")
     package        = st.session_state.get("package", {})
     script_outline = package.get("script_outline", [])
+    media_analysis = st.session_state.get("media_analysis", [])
 
     if mode == MODE_FILM:
         char_names = [c["name"] for c in package.get("character_matrix", [])]
         prompt = _shot_prompt_film(topic, source_type, matrix, char_names,
                                    script_outline, script_text,
-                                   has_trailer, is_shorts)
+                                   has_trailer, is_shorts, media_analysis)
     elif mode == MODE_TECH:
         prompt = _shot_prompt_tech(topic, matrix, script_outline,
-                                   script_text, is_shorts)
+                                   script_text, is_shorts, media_analysis)
     else:
         prompt = _shot_prompt_edu(topic, matrix, script_outline,
-                                  script_text, is_shorts)
+                                  script_text, is_shorts, media_analysis)
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+        model_name=GEMINI_MODEL,
         generation_config={"response_mime_type": "application/json"},
     )
     for delay in [1, 2, 4, 8]:
@@ -912,18 +1504,37 @@ def generate_shot_list(api_key: str, has_trailer: bool, is_shorts: bool) -> list
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CLIP RESOLVER
+# CLIP RESOLVER  — per-clip credit logic
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# Credit rules (per spec):
+#   user_upload_*  → ""                        (creator's own content, no credit)
+#   pexels_video   → "Video: Pexels.com"
+#   pexels_image   → "Photo: Pexels.com"
+#   trailer_clip   → "Courtesy: {topic} Official Trailer"
+#   wiki/openverse → "Image: Wikipedia / Wikimedia Commons" or "Image: OpenVerse CC"
+#   *_card         → ""                        (generated, no third-party source)
 
 def _resolve_clip(shot, mode,
                   used_urls: set, topic,
-                  trailer_path: str | None, trailer_segs: list,
-                  trailer_idx: list,
+                  trailer_path, trailer_segs,
+                  trailer_idx,
                   cw: int, ch: int,
-                  is_shorts: bool):
+                  is_shorts: bool,
+                  pexels_key: str,
+                  media_analysis: list[dict]):
+    """
+    Resolve one shot dict → (visual, credit_str).
+    visual      → np.ndarray (still) or MoviePy clip
+    credit_str  → per-source attribution or ""
+    """
     stype       = shot.get("type", "text_card")
+    upload_fn   = shot.get("upload_filename", "")
     arr         = None
     clip_credit = ""
+
+    # Build lookup: filename → path from media_analysis
+    upload_map = {m["filename"]: m["path"] for m in media_analysis}
 
     def _fetch_unique(url):
         if not url or url in used_urls:
@@ -933,12 +1544,86 @@ def _resolve_clip(shot, mode,
             used_urls.add(url)
         return a
 
-    # ── TRAILER CLIP ─────────────────────────────────────────────────────────
-    if stype == "trailer_clip":
-        stype = "tmdb_backdrop" # Safely forces fallback if called
+    # ── USER UPLOAD — VIDEO ─────────────────────────────────────────────────
+    if stype == "user_upload_video":
+        path = upload_map.get(upload_fn)
+        if path and os.path.exists(path):
+            try:
+                duration = max(float(shot.get("duration_seconds", 12)), 5.0)
+                clip = _loop_video_clip(path, duration, cw, ch)
+                return clip, ""   # No credit for own content
+            except Exception:
+                pass  # fall through to fallback
 
-    # ── WIKI IMAGE ───────────────────────────────────────────────────────────
-    if stype in ("wiki_image", "tmdb_poster", "tmdb_backdrop", "tmdb_cast"):
+    # ── USER UPLOAD — IMAGE ─────────────────────────────────────────────────
+    elif stype == "user_upload_image":
+        path = upload_map.get(upload_fn)
+        if path and os.path.exists(path):
+            try:
+                img = Image.open(path).convert("RGB")
+                arr = _fit_to_canvas(img, cw, ch)
+                return arr, ""   # No credit for own content
+            except Exception:
+                pass
+
+    # ── TRAILER CLIP ─────────────────────────────────────────────────────────
+    elif stype == "trailer_clip":
+        if trailer_path and trailer_segs:
+            idx  = trailer_idx[0] % len(trailer_segs)
+            s, e = trailer_segs[idx]
+            trailer_idx[0] += 1
+            try:
+                vc = VideoFileClip(trailer_path).subclip(s, e)
+                if vc.w != cw or vc.h != ch:
+                    src_ratio = vc.w / vc.h
+                    tgt_ratio = cw / ch
+                    both_l = src_ratio >= 1.0 and tgt_ratio >= 1.0
+                    both_p = src_ratio <  1.0 and tgt_ratio <  1.0
+                    if both_l or both_p:
+                        scale = max(cw / vc.w, ch / vc.h)
+                        vc = vc.resize(scale).crop(
+                            x_center=vc.w * scale / 2,
+                            y_center=vc.h * scale / 2,
+                            width=cw, height=ch)
+                    else:
+                        scale = min(cw / vc.w, ch / vc.h)
+                        vc_r  = vc.resize(scale)
+                        bg_arr = _fit_to_canvas(Image.fromarray(vc.get_frame(0)), cw, ch)
+                        bg_clip = VideoClip(lambda t, b=bg_arr: b, duration=vc.duration)
+                        from moviepy.editor import CompositeVideoClip
+                        ox = (cw - vc_r.w) // 2
+                        oy = (ch - vc_r.h) // 2
+                        vc = CompositeVideoClip(
+                            [bg_clip, vc_r.set_position((ox, oy))], size=(cw, ch))
+                return vc, f"Courtesy: {topic} Official Trailer"
+            except Exception:
+                pass
+
+    # ── PEXELS VIDEO ─────────────────────────────────────────────────────────
+    elif stype == "pexels_video":
+        query = shot.get("pexels_query") or topic
+        orientation = "portrait" if is_shorts else "landscape"
+        video_path = _pexels_video_download(
+            query, pexels_key, PEXELS_CACHE_DIR, orientation)
+        if video_path:
+            try:
+                duration = max(float(shot.get("duration_seconds", 12)), 5.0)
+                clip = _loop_video_clip(video_path, duration, cw, ch)
+                return clip, "Video: Pexels.com"
+            except Exception:
+                pass
+
+    # ── PEXELS IMAGE ─────────────────────────────────────────────────────────
+    elif stype == "pexels_image":
+        query = shot.get("pexels_query") or topic
+        orientation = "portrait" if is_shorts else "landscape"
+        url = _pexels_image_url(query, pexels_key, orientation)
+        arr = _fetch_unique(url)
+        if arr is not None:
+            clip_credit = "Photo: Pexels.com"
+
+    # ── WIKI / TMDB (via Wikipedia) ──────────────────────────────────────────
+    elif stype in ("wiki_image", "tmdb_poster", "tmdb_backdrop", "tmdb_cast"):
         if stype == "tmdb_poster":
             queries = [topic, f"{topic} film", f"{topic} poster"]
         elif stype == "tmdb_backdrop":
@@ -948,24 +1633,27 @@ def _resolve_clip(shot, mode,
             queries = [name, f"{name} actor"] if name else [topic]
         else:
             queries = [shot.get("wiki_title", topic), topic]
-
         url = _wiki_image_multi(queries)
         arr = _fetch_unique(url)
         if arr is not None:
-            clip_credit = "Images courtesy: Wikipedia / Wikimedia Commons"
+            clip_credit = "Image: Wikipedia / Wikimedia Commons"
 
-    # ── OPENVERSE B-ROLL ─────────────────────────────────────────────────────
+    # ── OPENVERSE (generic B-roll fallback when no pexels key) ───────────────
     elif stype in ("pexels_broll", "openverse_image"):
-        query = (shot.get("pexels_query")
-                 or shot.get("image_query")
-                 or shot.get("wiki_title")
-                 or topic)
-        for page in range(1, 4):
-            url = _openverse_image(query, page=page)
+        query = (shot.get("pexels_query") or shot.get("image_query") or topic)
+        # Try Pexels image first if key available
+        if pexels_key:
+            url = _pexels_image_url(query, pexels_key)
             arr = _fetch_unique(url)
             if arr is not None:
-                clip_credit = "Images courtesy: OpenVerse (CC licensed)"
-                break
+                clip_credit = "Photo: Pexels.com"
+        if arr is None:
+            for page in range(1, 4):
+                url = _openverse_image(query, page=page)
+                arr = _fetch_unique(url)
+                if arr is not None:
+                    clip_credit = "Image: OpenVerse (CC licensed)"
+                    break
 
     # ── GENERATED CARDS ──────────────────────────────────────────────────────
     elif stype == "text_card":
@@ -990,16 +1678,27 @@ def _resolve_clip(shot, mode,
             mode=mode, cw=cw, ch=ch)
 
     # ── FALLBACK CHAIN ───────────────────────────────────────────────────────
-    if arr is None:
-        url = _openverse_image(topic + " cinematic")
-        arr = _fetch_unique(url)
-        if arr is not None:
-            clip_credit = "Images courtesy: OpenVerse (CC licensed)"
+    # Reached only if the primary resolver above didn't return early
+    if arr is None and not hasattr(arr, "duration"):
+        # 1. Pexels image on topic
+        if pexels_key:
+            url = _pexels_image_url(topic, pexels_key)
+            arr = _fetch_unique(url)
+            if arr is not None:
+                clip_credit = "Photo: Pexels.com"
+        # 2. OpenVerse
+        if arr is None:
+            url = _openverse_image(topic + " cinematic")
+            arr = _fetch_unique(url)
+            if arr is not None:
+                clip_credit = "Image: OpenVerse (CC licensed)"
+        # 3. Wikipedia
         if arr is None:
             url = _wiki_image(topic)
             arr = _fetch_unique(url)
             if arr is not None:
-                clip_credit = "Images courtesy: Wikipedia / Wikimedia Commons"
+                clip_credit = "Image: Wikipedia / Wikimedia Commons"
+        # 4. Generated text card — always succeeds
         if arr is None:
             arr = make_text_card(shot.get("note", topic), mode=mode, cw=cw, ch=ch)
             clip_credit = ""
@@ -1012,82 +1711,52 @@ def _resolve_clip(shot, mode,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _assembly_worker(audio_path, shot_list, mode, topic,
-                     output_path, is_shorts, credit_override,
-                     trailer_path=None, trailer_segs=None):
+                     output_path, is_shorts, credit_override, pexels_key,
+                     media_analysis):
     try:
         cw, ch = _canvas(is_shorts)
-        audio = AudioFileClip(audio_path)
 
-        # ── FILM MODE: Direct Trailer Assembly ───────────────────────────
-        if mode == MODE_FILM and trailer_path and os.path.exists(trailer_path):
-            _write_progress(20, "Formatting custom trailer to fit screen...")
-            video = VideoFileClip(trailer_path)
-
-            if video.duration < audio.duration:
-                from moviepy.video.fx.all import loop
-                video = video.fx(loop, duration=audio.duration)
+        # ── Trailer (film mode only) ──────────────────────────────────────────
+        trailer_path = None
+        trailer_segs = []
+        if mode == MODE_FILM:
+            _write_progress(2, "Searching for official trailer…")
+            trailer_path = _download_trailer(topic)
+            if trailer_path:
+                n_segs = 4 if is_shorts else 8
+                trailer_segs = _extract_trailer_segments(
+                    trailer_path, num_segments=n_segs, seg_duration=8.0)
+                _write_progress(6, f"Trailer ready — {len(trailer_segs)} segments")
             else:
-                start_time = 2.0 if video.duration > (audio.duration + 2.0) else 0.0
-                video = video.subclip(start_time, start_time + audio.duration)
+                _write_progress(6, "Trailer not found — using stills/Pexels only")
 
-            scale = max(cw / video.w, ch / video.h)
-            video = (video.resize(scale)
-                          .crop(x_center=video.w * scale / 2,
-                                y_center=video.h * scale / 2,
-                                width=cw, height=ch))
-
-            _assembled = video.set_audio(audio)
-            
-            _write_progress(70, "Adding credit overlay...")
-            credit_text = credit_override or f"Courtesy: {topic}"
-            
-            def _overlay_frame(t):
-                f = _assembled.get_frame(t)
-                return _add_credit_overlay(f, credit_text, is_shorts, cw, ch)
-
-            final = VideoClip(_overlay_frame, duration=_assembled.duration).set_audio(audio)
-
-            _write_progress(85, "Rendering final MP4 (this takes ~60s)...")
-            final.write_videofile(
-                output_path, fps=FPS, codec="libx264",
-                audio_codec="aac", preset="ultrafast",
-                threads=2, logger=None,
-            )
-            _write_progress(100, "Done!", done=True)
-            
-            video.close()
-            audio.close()
-            final.close()
-            return
-
-        # ─────────────────────────────────────────────────────────────────────────────
-        # ORIGINAL LOGIC: Kept intact for Tech/Edu modes (or if no trailer URL provided)
-        # ─────────────────────────────────────────────────────────────────────────────
-        
-        trailer_segs = trailer_segs or []
-        total        = len(shot_list)
-        used_urls    = set()
-        trailer_idx  = [0]
-        clips        = []
-
-        clip_credits  = []
-        clip_starts   = []
-        running_time  = 0.0
+        # ── Build clips ───────────────────────────────────────────────────────
+        total       = len(shot_list)
+        used_urls   = set()
+        trailer_idx = [0]
+        clips       = []
+        clip_credits = []
+        clip_starts  = []
+        running_time = 0.0
 
         for i, shot in enumerate(shot_list):
-            pct = 20 + int(60 * i / total)
+            pct = 12 + int(68 * i / total)
             _write_progress(pct,
                 f"Building clip {i+1}/{total} [{shot.get('type','?')}] — "
-                f"{shot.get('note','')}")
+                f"{shot.get('note', shot.get('upload_filename', ''))}")
 
             duration = max(float(shot.get("duration_seconds", 12)), 5.0)
             zoom_in  = (i % 2 == 0)
 
             visual, auto_credit = _resolve_clip(
                 shot, mode,
-                used_urls, topic, trailer_path, trailer_segs,
-                trailer_idx, cw, ch, is_shorts)
+                used_urls, topic,
+                trailer_path, trailer_segs,
+                trailer_idx, cw, ch, is_shorts,
+                pexels_key, media_analysis,
+            )
 
+            # visual is either an ndarray (still) or a MoviePy clip
             if hasattr(visual, "duration"):
                 clip = visual.set_duration(min(visual.duration, duration))
             else:
@@ -1099,29 +1768,33 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
             clips.append(clip)
 
         # ── Stitch ────────────────────────────────────────────────────────────
-        _write_progress(82, "Stitching clips...")
+        _write_progress(82, "Stitching clips…")
         video = concatenate_videoclips(clips, method="compose")
 
         # ── Audio ─────────────────────────────────────────────────────────────
-        _write_progress(87, "Attaching voiceover...")
+        _write_progress(87, "Attaching voiceover…")
+        audio = AudioFileClip(audio_path)
+
         if video.duration < audio.duration:
-            extra  = audio.duration - video.duration + clips[-1].duration
+            extra      = audio.duration - video.duration + clips[-1].duration
             last_frame = clips[-1].get_frame(0)
-            filler = _zoom_clip(last_frame, extra, zoom_in=False)
-            clips[-1] = filler
-            video = concatenate_videoclips(clips, method="compose")
+            filler     = _zoom_clip(last_frame, extra, zoom_in=False)
+            clips[-1]  = filler
+            video      = concatenate_videoclips(clips, method="compose")
 
         _assembled = video.subclip(0, audio.duration).set_audio(audio)
 
         # ── Credit overlay ────────────────────────────────────────────────────
-        _write_progress(91, "Adding credit overlay...")
+        _write_progress(91, "Adding per-clip credit overlay…")
 
         def _credit_at(t):
+            # User override wins globally
             if credit_override:
                 return credit_override
+            # Otherwise use per-clip auto credit
             idx = bisect.bisect_right(clip_starts, t) - 1
             idx = max(0, min(idx, len(clip_credits) - 1))
-            return clip_credits[idx]
+            return clip_credits[idx]   # "" for user uploads and generated cards
 
         def _overlay_frame(t):
             f = _assembled.get_frame(t)
@@ -1131,20 +1804,31 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
             _assembled.audio)
 
         # ── Render ────────────────────────────────────────────────────────────
-        _write_progress(93, "Rendering MP4 (this takes ~60s)...")
+        _write_progress(93, "Rendering MP4 (this takes ~60s)…")
         final.write_videofile(
             output_path, fps=FPS, codec="libx264",
             audio_codec="aac", preset="ultrafast",
             threads=2, logger=None,
         )
         _write_progress(100, "Done!", done=True)
-        
-        video.close()
-        audio.close()
-        final.close()
 
     except Exception as e:
         _write_progress(0, "", done=True, error=str(e))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLEANUP
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cleanup_temp():
+    """Remove keyframes and Pexels cache. Called on Reset All Steps."""
+    import shutil
+    for d in (KEYFRAME_DIR, PEXELS_CACHE_DIR):
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1155,8 +1839,9 @@ st.title("🎬 SudoVid")
 st.caption("AI-Powered Script, Voice & Video Engine")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KEY RESOLUTION  — secrets take priority; UI inputs are the fallback
+# SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
+
 def _secret(key: str) -> str:
     try:
         return st.secrets[key]
@@ -1166,7 +1851,7 @@ def _secret(key: str) -> str:
 _gemini_from_secret = bool(_secret("GEMINI_API_KEY"))
 
 with st.sidebar:
-    st.header("🔑 API Key")
+    st.header("🔑 API Keys")
 
     if _gemini_from_secret:
         api_key = _secret("GEMINI_API_KEY")
@@ -1176,24 +1861,44 @@ with st.sidebar:
             "Gemini API Key", type="password",
             help="Add GEMINI_API_KEY to Streamlit Secrets to hide this field")
         if api_key:
-            st.success("✓ Gemini API Key set")
+            st.success("✓ Gemini set")
         else:
             st.warning("⚠️ Gemini API Key required")
 
+    st.markdown("---")
+    pexels_key = st.text_input(
+        "Pexels API Key",
+        type="password",
+        value=_secret("PEXELS_API_KEY"),
+        help=(
+            "Required for Pexels images AND Pexels video B-roll. "
+            "Free at pexels.com/api — or add PEXELS_API_KEY to Streamlit Secrets."
+        ),
+    )
+    if pexels_key:
+        st.success("✓ Pexels set — images & videos enabled")
+    else:
+        st.info("ℹ️ Without Pexels key, B-roll falls back to OpenVerse CC images")
+
     st.divider()
     if st.button("Reset All Steps"):
-        tmp_dir = tempfile.gettempdir()
-        for f in os.listdir(tmp_dir):
-            if f.startswith("trailer_"):
-                try: os.remove(os.path.join(tmp_dir, f))
-                except: pass
-                
+        _cleanup_temp()
         st.session_state.clear()
         st.rerun()
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "1. Parameters", "2. Ground Research", "3. Generated Script",
-    "4. Voiceover", "5. Content Bundle", "6. Video Assembly",
+    st.caption(f"Model: `{GEMINI_MODEL}`")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TABS  (7 tabs — renumbered)
+# ─────────────────────────────────────────────────────────────────────────────
+(tab1, tab2, tab3, tab4, tab5, tab6, tab7) = st.tabs([
+    "1. Parameters",
+    "2. Media Upload",
+    "3. Ground Research",
+    "4. Generated Script",
+    "5. Voiceover",
+    "6. Content Bundle",
+    "7. Video Assembly",
 ])
 
 
@@ -1267,14 +1972,103 @@ with tab1:
             st.session_state["source_param"] = source_type
             st.session_state["matrix_param"] = json.dumps(matrix_data)
             st.session_state["angle_param"]  = final_angle
-            st.success("✅ Parameters saved! Click **'2. Ground Research'**.")
+            st.success("✅ Parameters saved! Click **'2. Media Upload'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 2 — GROUND RESEARCH
+# TAB 2 — MEDIA UPLOAD  (NEW)
 # ─────────────────────────────────────────────────────────────────────────────
 with tab2:
-    st.subheader("Step 2: Targeted Intelligence Gathering")
+    st.subheader("Step 2: Upload Your Media")
+    st.info(
+        "Upload your own video clips and images. Gemini will analyse them and "
+        "the shot list will prefer your media over any external source. "
+        "You can skip this step and the app will source visuals from Pexels and OpenVerse."
+    )
+
+    st.markdown("#### 🎬 Video Clips")
+    st.caption(
+        f"Supported: {', '.join(f'.{e}' for e in ALLOWED_VIDEO_TYPES)} — "
+        f"max **500 MB per file** — multiple files allowed"
+    )
+    uploaded_videos = st.file_uploader(
+        "Upload video clips",
+        type=ALLOWED_VIDEO_TYPES,
+        accept_multiple_files=True,
+        key="video_uploader",
+        label_visibility="collapsed",
+    )
+
+    st.markdown("#### 🖼️ Images")
+    st.caption(
+        f"Supported: {', '.join(f'.{e}' for e in ALLOWED_IMAGE_TYPES)} — "
+        f"max **50 MB per file** — multiple files allowed"
+    )
+    uploaded_images = st.file_uploader(
+        "Upload images",
+        type=ALLOWED_IMAGE_TYPES,
+        accept_multiple_files=True,
+        key="image_uploader",
+        label_visibility="collapsed",
+    )
+
+    # Save & validate on change
+    all_media_meta = st.session_state.get("uploaded_media", [])
+
+    if st.button("💾 Save & Analyse Media"):
+        if not api_key:
+            st.warning("⚠️ Gemini API Key required for analysis.")
+        else:
+            saved = []
+            for uf in (uploaded_videos or []):
+                meta = _save_upload(uf, "video")
+                if meta:
+                    saved.append(meta)
+            for uf in (uploaded_images or []):
+                meta = _save_upload(uf, "image")
+                if meta:
+                    saved.append(meta)
+
+            if saved:
+                st.session_state["uploaded_media"] = saved
+                with st.spinner(
+                    f"🔍 Analysing {len(saved)} file(s) with Gemini Vision…"
+                ):
+                    analysis = analyse_uploaded_media(api_key, saved)
+                    st.session_state["media_analysis"] = analysis
+                st.success(f"✅ {len(analysis)} file(s) analysed and ready.")
+            else:
+                st.session_state["uploaded_media"]  = []
+                st.session_state["media_analysis"]  = []
+                st.info("No files saved. Proceeding without user media.")
+
+    # Show analysis results
+    analysis = st.session_state.get("media_analysis", [])
+    if analysis:
+        st.markdown("### 📋 Media Analysis Results")
+        for m in analysis:
+            icon = "🎬" if m.get("media_type") == "video" else "🖼️"
+            tags = ", ".join(m.get("content_tags", []))
+            st.markdown(
+                f'<div class="media-card">'
+                f'{icon} <b>{m["filename"]}</b> ({m["size_mb"]} MB)<br>'
+                f'<b>Subjects:</b> {m.get("dominant_subjects", "—")}<br>'
+                f'<b>Mood:</b> {m.get("mood", "—")} &nbsp;|&nbsp; '
+                f'<b>Suggested use:</b> {m.get("suggested_use", "—")}<br>'
+                f'<b>Tags:</b> {tags if tags else "—"}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        st.success("🎉 **Step 2 Complete!** Click **'3. Ground Research'**.")
+    elif st.session_state.get("uploaded_media") == []:
+        st.success("Skipped — proceeding without user media. Click **'3. Ground Research'**.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 3 — GROUND RESEARCH
+# ─────────────────────────────────────────────────────────────────────────────
+with tab3:
+    st.subheader("Step 3: Targeted Intelligence Gathering")
     if "topic_param" not in st.session_state:
         st.info("Complete Step 1 first.")
     else:
@@ -1297,28 +2091,35 @@ with tab2:
             st.success("✅ Research Complete")
             with st.expander("View Factual Briefing", expanded=False):
                 st.markdown(st.session_state["research"])
-            st.success("🎉 **Step 2 Complete!** Click **'3. Generated Script'**.")
+            st.success("🎉 **Step 3 Complete!** Click **'4. Generated Script'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 3 — GENERATED SCRIPT
+# TAB 4 — GENERATED SCRIPT
 # ─────────────────────────────────────────────────────────────────────────────
-with tab3:
-    st.subheader("Step 3: Script Generation & Editing")
+with tab4:
+    st.subheader("Step 4: Script Generation & Editing")
     if "research" not in st.session_state:
-        st.info("Complete Step 2 first.")
+        st.info("Complete Step 3 first.")
     else:
+        media_analysis = st.session_state.get("media_analysis", [])
+        if media_analysis:
+            st.info(
+                f"💡 Script will be informed by **{len(media_analysis)} uploaded media file(s)**."
+            )
+
         if st.button("🚀 Architect Refined Script"):
             with st.spinner(f"Synthesising for {st.session_state['length_param']}…"):
                 st.session_state["package"] = generate_script_package(
-                    mode        = st.session_state["mode_param"],
-                    topic       = st.session_state["topic_param"],
-                    research    = st.session_state["research"],
-                    angle       = st.session_state["angle_param"],
-                    matrix      = st.session_state["matrix_param"],
-                    source_type = st.session_state["source_param"],
-                    length      = st.session_state["length_param"],
-                    api_key     = api_key,
+                    mode           = st.session_state["mode_param"],
+                    topic          = st.session_state["topic_param"],
+                    research       = st.session_state["research"],
+                    angle          = st.session_state["angle_param"],
+                    matrix         = st.session_state["matrix_param"],
+                    source_type    = st.session_state["source_param"],
+                    length         = st.session_state["length_param"],
+                    api_key        = api_key,
+                    media_analysis = media_analysis,
                 )
 
         if "package" in st.session_state:
@@ -1341,7 +2142,7 @@ with tab3:
                                 unsafe_allow_html=True)
 
                 st.markdown("### 📝 Conversational Script Editor")
-                st.info("💡 Edit below as you want it spoken. Use commas or --- for natural pauses.")
+                st.info("💡 Edit freely. Use commas or --- for natural pauses.")
                 fs = p.get("full_script", {})
                 default_text = "\n\n".join(filter(None, [
                     p.get("hook_script", ""), fs.get("intro", ""),
@@ -1355,17 +2156,16 @@ with tab3:
                     data=st.session_state["final_script_text"],
                     file_name=f"{p.get('viral_title','script').replace(' ','_').lower()}.txt",
                     mime="text/plain")
-                st.success("🎉 **Step 3 Complete!** Click **'4. Voiceover'**.")
+                st.success("🎉 **Step 4 Complete!** Click **'5. Voiceover'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 4 — VOICEOVER
+# TAB 5 — VOICEOVER
 # ─────────────────────────────────────────────────────────────────────────────
-with tab4:
-    st.subheader("Step 4: AI Voiceover Studio")
+with tab5:
+    st.subheader("Step 5: AI Voiceover Studio")
     st.info("Turn your finalized script into professional audio.")
 
-    st.markdown("### 🎙️ Voice Settings")
     voice_option = st.selectbox("Select Narrator (US English)", [
         ("en-US-ChristopherNeural", "Christopher (Male - Deep/Professional)"),
         ("en-US-GuyNeural",         "Guy (Male - Natural/Conversational)"),
@@ -1381,15 +2181,14 @@ with tab4:
         ("en-US-AvaNeural",         "Ava (Female - Engaging)"),
     ], format_func=lambda x: x[1])
 
-    st.markdown("---")
     source_mode = st.radio("Choose Text Source for Voiceover:",
-                            ["Use Generated Script (from Tab 3)",
+                            ["Use Generated Script (from Tab 4)",
                              "Upload Custom Text File (.txt)"])
     text_to_synthesize = ""
-    if source_mode == "Use Generated Script (from Tab 3)":
+    if source_mode == "Use Generated Script (from Tab 4)":
         text_to_synthesize = st.session_state.get("final_script_text", "")
         if not text_to_synthesize:
-            st.warning("⚠️ No generated script found. Complete Steps 1-3 first.")
+            st.warning("⚠️ No generated script found. Complete Steps 1-4 first.")
     else:
         uploaded_file = st.file_uploader("Upload .txt for Voiceover",
                                           type=["txt"], key="voice_upload")
@@ -1397,19 +2196,18 @@ with tab4:
             text_to_synthesize = uploaded_file.getvalue().decode("utf-8")
             st.success("File uploaded!")
 
-    st.markdown("---")
     st.markdown("### Preview Text for Audio Generation")
-    st.session_state["tab4_audio_text"] = st.text_area(
+    st.session_state["tab5_audio_text"] = st.text_area(
         "This exact text will be sent to the AI Voice:",
         value=text_to_synthesize, height=250)
 
     if st.button("🔊 Generate Voiceover"):
-        if not st.session_state["tab4_audio_text"].strip():
+        if not st.session_state["tab5_audio_text"].strip():
             st.error("Text box is empty.")
         else:
             with st.spinner(f"Synthesising with {voice_option[1]}…"):
                 audio_path = generate_audio_sync(
-                    st.session_state["tab4_audio_text"], voice_option[0])
+                    st.session_state["tab5_audio_text"], voice_option[0])
                 if audio_path:
                     st.session_state["last_audio_path"] = audio_path
                     st.success("✅ Audio generated!")
@@ -1421,23 +2219,23 @@ with tab4:
                             mime="audio/mp3")
                 else:
                     st.error("Audio generation failed. Check internet connection.")
-            st.success("🎉 **Step 4 Complete!** Click **'5. Content Bundle'**.")
+            st.success("🎉 **Step 5 Complete!** Click **'6. Content Bundle'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 5 — CONTENT BUNDLE
+# TAB 6 — CONTENT BUNDLE
 # ─────────────────────────────────────────────────────────────────────────────
-with tab5:
-    st.subheader("Step 5: YouTube Content Bundle")
+with tab6:
+    st.subheader("Step 6: YouTube Content Bundle")
     st.info("Generate SEO title, description, tags, hashtags, and thumbnail prompt.")
 
     bundle_source = st.radio("Script source for bundle:",
-                              ["Use 'Generated Script' (from Tab 3)",
-                               "Use 'Final Audio Text' (from Tab 4)"])
+                              ["Use 'Generated Script' (from Tab 4)",
+                               "Use 'Final Audio Text' (from Tab 5)"])
     if st.button("📦 Generate Content Bundle"):
         target_text = (st.session_state.get("final_script_text", "")
-                       if bundle_source == "Use 'Generated Script' (from Tab 3)"
-                       else st.session_state.get("tab4_audio_text", ""))
+                       if bundle_source == "Use 'Generated Script' (from Tab 4)"
+                       else st.session_state.get("tab5_audio_text", ""))
         if not api_key:
             st.error("⚠️ Gemini API Key required.")
         elif not target_text.strip():
@@ -1452,7 +2250,6 @@ with tab5:
             st.error(bundle["error"])
         else:
             st.success("✅ YouTube Bundle Generated!")
-            st.markdown("### 📝 YouTube Metadata")
             st.text_input("**Viral Title**",  value=bundle.get("viral_title",  ""))
             st.text_area( "**Description**",   value=bundle.get("description",  ""), height=200)
             c1, c2 = st.columns(2)
@@ -1460,18 +2257,16 @@ with tab5:
                 st.text_area("**Tags**", value=", ".join(bundle.get("tags", [])), height=100)
             with c2:
                 st.text_area("**Hashtags**", value=" ".join(bundle.get("hashtags", [])), height=100)
-            st.markdown("---")
             st.markdown("### 🎨 AI Thumbnail Prompt")
-            st.caption("Paste into Midjourney, DALL-E, or Canva.")
             st.text_area("Image Prompt:", value=bundle.get("thumbnail_prompt", ""), height=100)
-            st.success("🎉 **Step 5 Complete!** Click **'6. Video Assembly'**.")
+            st.success("🎉 **Step 6 Complete!** Click **'7. Video Assembly'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 6 — VIDEO ASSEMBLY
+# TAB 7 — VIDEO ASSEMBLY
 # ─────────────────────────────────────────────────────────────────────────────
-with tab6:
-    st.subheader("Step 6: Video Assembly")
+with tab7:
+    st.subheader("Step 7: Video Assembly")
 
     mode       = st.session_state.get("mode_param", "")
     topic_val  = st.session_state.get("topic_param", "")
@@ -1485,19 +2280,50 @@ with tab6:
         shorts_badge = " — 📱 **Shorts 9:16**" if is_shorts else " — 🖥️ **Landscape 16:9**"
         st.info(f"Mode: **{mode_labels.get(mode, mode)}** — Topic: **{topic_val}**{shorts_badge}")
 
+    # Media summary
+    media_analysis = st.session_state.get("media_analysis", [])
+    if media_analysis:
+        n_vid = sum(1 for m in media_analysis if m.get("media_type") == "video")
+        n_img = sum(1 for m in media_analysis if m.get("media_type") == "image")
+        st.success(
+            f"📁 **{len(media_analysis)} uploaded files** ready "
+            f"({n_vid} videos, {n_img} images) — will be preferred in shot list."
+        )
+    else:
+        st.caption("No user media uploaded — visuals sourced from Pexels and OpenVerse.")
+
+    # Pexels status in context of assembly
+    if pexels_key:
+        st.caption("✅ Pexels enabled — images AND video B-roll available (highest quality)")
+    else:
+        st.caption("⚠️ No Pexels key — B-roll will use OpenVerse CC images only")
+
     # Credit override
     override_on = st.checkbox(
-        "✏️ Override automatic credits",
+        "✏️ Override all automatic credits with a custom global credit",
         value=False,
-        help="By default credits are set automatically per clip source. Enable this to write your own single credit line for the whole video.")
+        help=(
+            "By default, credits are set per clip:\n"
+            "• User uploads → no credit\n"
+            "• Pexels video → 'Video: Pexels.com'\n"
+            "• Pexels image → 'Photo: Pexels.com'\n"
+            "• Trailer → 'Courtesy: [Topic] Official Trailer'\n"
+            "• Wikipedia → 'Image: Wikipedia / Wikimedia Commons'\n"
+            "• Generated cards → no credit\n\n"
+            "Enable this only if you want a single credit for the whole video."
+        ),
+    )
     credit_override = ""
     if override_on:
         credit_override = st.text_input(
-            "Custom credit text",
+            "Custom global credit text",
             value=f"Courtesy: {topic_val}" if topic_val else "Courtesy: Studio Name",
-            help="Shorts: top centre white pill. Long format: bottom left small white text.")
+        )
     else:
-        st.caption("🤖 Credits set automatically per clip.")
+        st.caption(
+            "🎯 Per-clip credits: your uploads show no credit; "
+            "Pexels/Wikipedia/trailer show their own source."
+        )
 
     st.markdown("---")
 
@@ -1507,9 +2333,9 @@ with tab6:
 
     missing = []
     if not audio_path_v or not os.path.exists(audio_path_v):
-        missing.append("✗ No audio — complete Step 4 first")
+        missing.append("✗ No audio — complete Step 5 first")
     if not script_text_v:
-        missing.append("✗ No script — complete Step 3 first")
+        missing.append("✗ No script — complete Step 4 first")
     if not topic_val:
         missing.append("✗ No topic — complete Step 1 first")
     if not api_key:
@@ -1519,55 +2345,28 @@ with tab6:
         for m in missing:
             st.warning(m)
     else:
+        # Film-mode trailer pre-fetch
         if mode == MODE_FILM:
-            st.caption("ℹ️ Paste a direct video link below, or leave it blank to have the AI search for the official trailer.")
-            
-            custom_trailer_url = st.text_input(
-                "🔗 Exact Trailer URL",
-                placeholder="Leave blank to auto-search, or paste a YouTube/IMDb link...",
+            st.caption(
+                "ℹ️ Trailers sourced from hd-trailers.net → Apple CDN, "
+                "Apple XML feed, IMDb, and Internet Archive — no extra keys needed."
             )
-            
-            if st.button("🎞️ Fetch Trailer"):
-                with st.spinner("Preparing trailer…"):
-                    safe_name = re.sub(r"[^a-z0-9]", "_", topic_val.lower())
-                    tp = os.path.join(tempfile.gettempdir(), f"trailer_{safe_name}_custom.mp4")
-                    
-                    target_url = custom_trailer_url.strip()
-                    
-                    # THE BRILLIANT FIX: Use Gemini to find the URL if the user didn't provide one
-                    if not target_url:
-                        st.info("🤖 Asking AI to find the official theatrical trailer...")
-                        
-                        search_prompt = f"""
-                        Search the web for the OFFICIAL cinematic theatrical movie trailer for "{topic_val}".
-                        You must find the exact YouTube or IMDb video URL.
-                        CRITICAL: Exclude all video games, VR experiences, interviews, fan reactions, and IGN FanFests.
-                        Return ONLY the raw URL as plain text. Do not add any conversational text or markdown formatting.
-                        """
-                        
-                        target_url = call_gemini(
-                            api_key=api_key, 
-                            prompt=search_prompt, 
-                            system_instruction="You are a strict URL-finding bot. Output ONLY a valid http/https URL.", 
-                            use_search=True
+            if st.button("🎞️ Pre-fetch Trailer (optional but recommended)"):
+                with st.spinner(f"Fetching {topic_val} trailer…"):
+                    tp = _download_trailer(topic_val)
+                    if tp:
+                        segs = _extract_trailer_segments(tp)
+                        st.session_state["trailer_path"] = tp
+                        st.session_state["trailer_segs"] = segs
+                        st.success(f"✅ Trailer ready — {len(segs)} segments")
+                    else:
+                        st.session_state["trailer_path"] = None
+                        st.session_state["trailer_segs"] = []
+                        st.warning(
+                            "Trailer not found. Assembly will use user uploads + Pexels/OpenVerse."
                         )
-                        
-                        if target_url and target_url.strip().startswith("http"):
-                            st.success(f"🔍 AI found trailer: {target_url.strip()}")
-                        else:
-                            st.error("❌ AI could not confidently find a trailer URL. Please paste one manually.")
-                            target_url = None
 
-                    # Proceed to download the URL (whether provided manually or found by AI)
-                    if target_url:
-                        if _download_custom_video(target_url.strip(), tp):
-                            st.session_state["trailer_path"] = tp
-                            st.success("✅ Trailer downloaded successfully! You can now Start Video Assembly.")
-                        else:
-                            st.session_state["trailer_path"] = None
-                            st.error("❌ Failed to download the video. YouTube may have blocked the connection. Try pasting an IMDb link.")
-
-        # Shot list
+        # Shot list generation
         if st.button("🎬 Generate Shot List"):
             trailer_available = bool(st.session_state.get("trailer_path"))
             with st.spinner("Gemini is planning your shot list…"):
@@ -1577,35 +2376,52 @@ with tab6:
         if "shot_list" in st.session_state:
             sl        = st.session_state["shot_list"]
             total_dur = sum(s.get("duration_seconds", 12) for s in sl)
-            st.success(f"Shot list ready — **{len(sl)} clips**, ~**{int(total_dur)}s** total")
+
+            # Count how many shots use user uploads
+            upload_shots = sum(
+                1 for s in sl
+                if s.get("type") in ("user_upload_video", "user_upload_image")
+                   and s.get("upload_filename")
+            )
+            st.success(
+                f"Shot list ready — **{len(sl)} clips**, ~**{int(total_dur)}s** total"
+                + (f" | **{upload_shots} shots** use your uploaded media" if upload_shots else "")
+            )
 
             type_icons = {
-                "trailer_clip":    "🎬",
-                "wiki_image":      "📖",
-                "tmdb_poster":     "🖼️",
-                "tmdb_backdrop":   "🎞️",
-                "tmdb_cast":       "👤",
-                "pexels_broll":    "🌆",
-                "openverse_image": "🌆",
-                "text_card":       "📝",
-                "stat_card":       "📊",
-                "code_card":       "💻",
-                "chapter_card":    "📌",
+                "user_upload_video": "🎥",
+                "user_upload_image": "🖼️",
+                "trailer_clip":      "🎬",
+                "wiki_image":        "📖",
+                "tmdb_poster":       "🖼️",
+                "tmdb_backdrop":     "🎞️",
+                "tmdb_cast":         "👤",
+                "pexels_video":      "📹",
+                "pexels_image":      "🌆",
+                "pexels_broll":      "🌆",
+                "openverse_image":   "🌆",
+                "text_card":         "📝",
+                "stat_card":         "📊",
+                "code_card":         "💻",
+                "chapter_card":      "📌",
             }
+
             with st.expander("📋 View Shot List", expanded=False):
                 for s in sl:
                     icon   = type_icons.get(s.get("type", ""), "▪️")
-                    detail = (s.get("image_query") or s.get("pexels_query") or
-                              s.get("cast_name")   or s.get("wiki_title")   or
-                              s.get("text_line1")  or s.get("stat_value")   or
-                              s.get("chapter_title") or s.get("note", ""))
+                    upload = f" [{s.get('upload_filename')}]" if s.get("upload_filename") else ""
+                    detail = (s.get("pexels_query") or s.get("cast_name") or
+                              s.get("wiki_title")  or s.get("text_line1") or
+                              s.get("stat_value")  or s.get("chapter_title") or
+                              s.get("note", ""))
                     st.markdown(
-                        f"`{s.get('segment_index',0):02d}` {icon} "
-                        f"**{s.get('type','')}** — "
-                        f"{s.get('duration_seconds','?')}s — _{detail}_")
+                        f"`{s.get('segment_index', 0):02d}` {icon} "
+                        f"**{s.get('type','')}**{upload} — "
+                        f"{s.get('duration_seconds','?')}s — _{detail}_"
+                    )
 
             st.markdown("---")
-            output_path = os.path.join(tempfile.gettempdir(), "sa_output_video.mp4")
+            output_path = os.path.join(TMP_ROOT, "sa_output_video.mp4")
 
             if "assembly_running" not in st.session_state:
                 st.session_state["assembly_running"] = False
@@ -1626,8 +2442,8 @@ with tab6:
                             output_path     = output_path,
                             is_shorts       = is_shorts,
                             credit_override = credit_override,
-                            trailer_path    = st.session_state.get("trailer_path"),
-                            trailer_segs    = [], # Segments removed; gracefully bypass
+                            pexels_key      = pexels_key,
+                            media_analysis  = media_analysis,
                         ),
                         daemon=True,
                     )
@@ -1647,9 +2463,12 @@ with tab6:
                         with open(out, "rb") as f:
                             st.download_button(
                                 "📥 Download MP4", data=f,
-                                file_name=f"{topic_val.replace(' ','_').lower()}"
-                                          f"{'_shorts' if is_shorts else ''}_video.mp4",
-                                mime="video/mp4")
+                                file_name=(
+                                    f"{topic_val.replace(' ','_').lower()}"
+                                    f"{'_shorts' if is_shorts else ''}_video.mp4"
+                                ),
+                                mime="video/mp4",
+                            )
                     if st.button("🔄 Reset & Assemble Again"):
                         for k in ("shot_list", "assembly_running",
                                   "assembly_output", "trailer_path", "trailer_segs"):
@@ -1667,4 +2486,7 @@ with tab6:
 # FOOTER
 # ─────────────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption("SudoVid v2.0 | AI-Powered Script, Voice & Video Engine | Zero API Keys Required")
+st.caption(
+    f"SudoVid v3.0 | AI-Powered Script, Voice & Video Engine | "
+    f"Model: {GEMINI_MODEL} | User media preferred over all external sources"
+)

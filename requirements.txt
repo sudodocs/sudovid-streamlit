@@ -9,7 +9,6 @@ streamlit>=1.35.0
 moviepy==1.0.3
 Pillow>=10.0.0
 numpy>=1.26.0
-yt-dlp>=2025.1.1
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 requests>=2.31.0
@@ -17,6 +16,3 @@ requests>=2.31.0
 # ── System note ───────────────────────────────────────────────────────────────
 # moviepy + yt-dlp require ffmpeg. Add a packages.txt in repo root containing:
 #   ffmpeg
-
-# Content Scraper
-beautifulsoup4>=4.12.0

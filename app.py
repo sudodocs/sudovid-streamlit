@@ -571,6 +571,196 @@ audio {
     font-weight: 600;
     font-size: 0.85em;
 }
+/* ── HERO HEADER ─────────────────────────────────────────────────────────── */
+.sv-hero {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    background-color: var(--sv-surface);
+    border: 1px solid var(--sv-border);
+    border-radius: var(--sv-radius-lg);
+    padding: 16px 22px;
+    margin-bottom: 20px;
+}
+.sv-hero-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.sv-hero-icon {
+    font-size: 28px;
+    line-height: 1;
+}
+.sv-hero-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.sv-hero-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--sv-text) !important;
+    letter-spacing: -0.01em;
+}
+.sv-hero-sub {
+    font-size: 0.78rem;
+    color: var(--sv-text-2) !important;
+}
+ 
+/* ── STEP PROGRESS TRACKER ───────────────────────────────────────────────── */
+.sv-step-track {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+}
+.sv-step-dot {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+.sv-step-circle {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: default;
+    transition: transform 0.15s ease;
+}
+.sv-step-circle:hover { transform: scale(1.12); }
+ 
+.sv-step-done {
+    background-color: var(--sv-green-dim);
+    color: var(--sv-green) !important;
+    border: 1.5px solid var(--sv-green-bdr);
+}
+.sv-step-active {
+    background-color: var(--sv-blue-dim);
+    color: var(--sv-blue) !important;
+    border: 1.5px solid var(--sv-blue);
+}
+.sv-step-locked {
+    background-color: var(--sv-surface-2);
+    color: var(--sv-text-3) !important;
+    border: 1px solid var(--sv-border);
+}
+.sv-step-label {
+    font-size: 9px;
+    color: var(--sv-text-3) !important;
+    text-align: center;
+    max-width: 40px;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+.sv-step-connector {
+    width: 18px;
+    height: 1px;
+    background-color: var(--sv-border);
+    margin-top: 13px;   /* vertically center with circle mid-point */
+    flex-shrink: 0;
+}
+ 
+/* ── SIDEBAR ─────────────────────────────────────────────────────────────── */
+.sv-sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0 12px;
+    border-bottom: 1px solid var(--sv-border);
+    margin-bottom: 14px;
+}
+.sv-sidebar-brand-icon { font-size: 22px; line-height: 1; }
+.sv-sidebar-brand-name {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--sv-text) !important;
+    letter-spacing: -0.01em;
+}
+.sv-sidebar-section-label {
+    font-size: 0.7rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+    color: var(--sv-text-3) !important;
+    margin: 0 0 8px !important;
+}
+ 
+/* API key status rows */
+.sv-key-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: var(--sv-radius-sm);
+    margin-bottom: 4px;
+    font-size: 0.82rem;
+}
+.sv-key-ok   { background-color: var(--sv-green-dim); border: 1px solid var(--sv-green-bdr); }
+.sv-key-missing { background-color: var(--sv-red-dim); border: 1px solid var(--sv-red-bdr); }
+.sv-key-warn { background-color: var(--sv-amber-dim); border: 1px solid var(--sv-amber-bdr); }
+ 
+.sv-key-icon { font-size: 0.9rem; width: 16px; text-align: center; flex-shrink: 0; }
+.sv-key-name { font-weight: 600; color: var(--sv-text) !important; flex: 1; }
+.sv-key-source { font-size: 0.74rem; color: var(--sv-text-2) !important; }
+ 
+.sv-key-ok   .sv-key-icon { color: var(--sv-green) !important; }
+.sv-key-missing .sv-key-icon { color: var(--sv-red) !important; }
+.sv-key-warn .sv-key-icon { color: var(--sv-amber) !important; }
+ 
+/* Sidebar workflow progress rows */
+.sv-prog-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: var(--sv-radius-sm);
+    margin-bottom: 2px;
+    font-size: 0.82rem;
+}
+.sv-prog-done   { background-color: var(--sv-green-dim); }
+.sv-prog-active { background-color: var(--sv-blue-dim);  border-left: 2px solid var(--sv-blue); }
+.sv-prog-locked { opacity: 0.5; }
+ 
+.sv-prog-icon  { width: 14px; text-align: center; font-weight: 700; flex-shrink: 0; }
+.sv-prog-label { color: var(--sv-text) !important; }
+.sv-prog-done  .sv-prog-icon { color: var(--sv-green) !important; }
+.sv-prog-active .sv-prog-icon { color: var(--sv-blue) !important; }
+ 
+/* Model badge */
+.sv-model-badge {
+    font-size: 0.72rem;
+    color: var(--sv-text-3) !important;
+    text-align: center;
+    padding: 6px 0 0;
+    font-family: monospace;
+}
+ 
+/* ── FOOTER ──────────────────────────────────────────────────────────────── */
+.sv-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 14px 0 6px;
+    border-top: 1px solid var(--sv-border);
+    margin-top: 20px;
+    font-size: 0.76rem;
+    color: var(--sv-text-3) !important;
+}
+.sv-footer code {
+    font-size: 0.72rem;
+    background-color: var(--sv-surface-2);
+    border: 1px solid var(--sv-border);
+    padding: 1px 5px;
+    border-radius: 4px;
+}           
 </style>
 """, unsafe_allow_html=True)
 
@@ -2827,8 +3017,112 @@ def _cleanup_temp():
 # APPLICATION UI
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.title("🎬 SudoVid")
-st.caption("AI-Powered Script, Voice & Video Engine")
+# ── HELPER: compute step states from session state ────────────────────────────
+def _step_states() -> list[dict]:
+    """
+    Returns a list of 6 dicts, one per workflow step.
+    Each dict has: label, short (sidebar), done (bool), active (bool).
+    'active' = the earliest incomplete step.
+    """
+    ss = st.session_state
+    steps = [
+        {
+            "label": "Parameters",
+            "short": "Params",
+            "done":  "topic_param" in ss,
+        },
+        {
+            "label": "Media Upload",
+            "short": "Media",
+            "done":  "uploaded_media" in ss,
+        },
+        {
+            "label": "Research & Script",
+            "short": "Script",
+            "done":  "final_script_text" in ss,
+        },
+        {
+            "label": "Voiceover",
+            "short": "Voice",
+            "done":  bool(ss.get("last_audio_path")),
+        },
+        {
+            "label": "Video Assembly",
+            "short": "Video",
+            "done":  bool(ss.get("assembly_output")),
+        },
+        {
+            "label": "Content Bundle",
+            "short": "Bundle",
+            "done":  "yt_bundle" in ss,
+        },
+    ]
+    # Mark the first incomplete step as active
+    found_active = False
+    for s in steps:
+        if not s["done"] and not found_active:
+            s["active"] = True
+            found_active = True
+        else:
+            s["active"] = False
+    return steps
+ 
+ 
+def _render_hero():
+    """Render the branded hero header with inline step progress tracker."""
+    steps = _step_states()
+ 
+    # Build step dots HTML
+    dots_html = ""
+    for i, s in enumerate(steps):
+        step_label = s["label"]
+        if s["done"]:
+            circle = (
+                '<span class="sv-step-circle sv-step-done" '
+                f'title="{step_label} — complete">✓</span>'
+            )
+        elif s.get("active"):
+            circle = (
+                '<span class="sv-step-circle sv-step-active" '
+                f'title="{step_label} — current">{i + 1}</span>'
+            )
+        else:
+            circle = (
+                '<span class="sv-step-circle sv-step-locked" '
+                f'title="{step_label} — locked">·</span>'
+            )
+ 
+        connector = '<span class="sv-step-connector"></span>' if i < 5 else ""
+        dots_html += f"""
+            <div class="sv-step-dot">
+                {circle}
+                <span class="sv-step-label">{s['short']}</span>
+            </div>
+            {connector}
+        """
+ 
+    st.markdown(
+        f"""
+        <div class="sv-hero">
+            <div class="sv-hero-left">
+                <div class="sv-hero-icon">🎬</div>
+                <div class="sv-hero-text">
+                    <span class="sv-hero-title">SudoVid</span>
+                    <span class="sv-hero-sub">
+                        AI-powered script, voice &amp; video engine
+                    </span>
+                </div>
+            </div>
+            <div class="sv-step-track">
+                {dots_html}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+ 
+ 
+_render_hero()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -2843,42 +3137,149 @@ def _secret(key: str) -> str:
 _gemini_from_secret = bool(_secret("GEMINI_API_KEY"))
 
 with st.sidebar:
-    st.header("🔑 API Keys")
-
+    # ── Branding strip ───────────────────────────────────────────────────────
+    st.markdown(
+        """
+        <div class="sv-sidebar-brand">
+            <span class="sv-sidebar-brand-icon">🎬</span>
+            <span class="sv-sidebar-brand-name">SudoVid</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+ 
+    # ── API Keys section ─────────────────────────────────────────────────────
+    st.markdown(
+        '<p class="sv-sidebar-section-label">API Keys</p>',
+        unsafe_allow_html=True,
+    )
+ 
+    # Gemini
     if _gemini_from_secret:
         api_key = _secret("GEMINI_API_KEY")
-        st.success("✓ Gemini (from Secrets)")
+        st.markdown(
+            '<div class="sv-key-row sv-key-ok">'
+            '<span class="sv-key-icon">✓</span>'
+            '<span class="sv-key-name">Gemini</span>'
+            '<span class="sv-key-source">from Secrets</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
     else:
         api_key = st.text_input(
-            "Gemini API Key", type="password",
-            help="Add GEMINI_API_KEY to Streamlit Secrets to hide this field")
+            "Gemini API Key",
+            type="password",
+            placeholder="AIza…",
+            help="Add GEMINI_API_KEY to Streamlit Secrets to hide this field",
+            label_visibility="collapsed",
+        )
         if api_key:
-            st.success("✓ Gemini set")
+            st.markdown(
+                '<div class="sv-key-row sv-key-ok">'
+                '<span class="sv-key-icon">✓</span>'
+                '<span class="sv-key-name">Gemini</span>'
+                '<span class="sv-key-source">entered</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
         else:
-            st.warning("⚠️ Gemini API Key required")
-
-    st.markdown("---")
+            st.markdown(
+                '<div class="sv-key-row sv-key-missing">'
+                '<span class="sv-key-icon">✗</span>'
+                '<span class="sv-key-name">Gemini API key</span>'
+                '<span class="sv-key-source">required</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption("Required for all AI steps.")
+ 
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+ 
+    # Pexels
     pexels_key = st.text_input(
         "Pexels API Key",
         type="password",
+        placeholder="Pexels key…",
         value=_secret("PEXELS_API_KEY"),
         help=(
-            "Required for Pexels images AND Pexels video B-roll. "
+            "Required for Pexels images AND video B-roll. "
             "Free at pexels.com/api — or add PEXELS_API_KEY to Streamlit Secrets."
         ),
+        label_visibility="collapsed",
     )
     if pexels_key:
-        st.success("✓ Pexels set — images & videos enabled")
+        st.markdown(
+            '<div class="sv-key-row sv-key-ok">'
+            '<span class="sv-key-icon">✓</span>'
+            '<span class="sv-key-name">Pexels</span>'
+            '<span class="sv-key-source">images &amp; video</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
     else:
-        st.info("ℹ️ Without Pexels key, B-roll falls back to OpenVerse CC images")
-
+        st.markdown(
+            '<div class="sv-key-row sv-key-warn">'
+            '<span class="sv-key-icon">⚠</span>'
+            '<span class="sv-key-name">Pexels</span>'
+            '<span class="sv-key-source">optional</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Without Pexels, B-roll falls back to OpenVerse CC images.")
+ 
     st.divider()
-    if st.button("Reset All Steps"):
-        _cleanup_temp()
-        st.session_state.clear()
-        st.rerun()
-
-    st.caption(f"Model: `{GEMINI_MODEL}`")
+ 
+    # ── Workflow progress (sidebar mini-tracker) ─────────────────────────────
+    st.markdown(
+        '<p class="sv-sidebar-section-label">Workflow progress</p>',
+        unsafe_allow_html=True,
+    )
+    for i, s in enumerate(_step_states()):
+        if s["done"]:
+            icon, cls = "✓", "sv-prog-done"
+        elif s.get("active"):
+            icon, cls = "→", "sv-prog-active"
+        else:
+            icon, cls = "·", "sv-prog-locked"
+        step_label = s["label"]
+        st.markdown(
+            f'<div class="sv-prog-row {cls}">'
+            f'<span class="sv-prog-icon">{icon}</span>'
+            f'<span class="sv-prog-label">{i + 1}. {step_label}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+ 
+    st.divider()
+ 
+    # ── Reset — danger-styled with inline confirm ─────────────────────────────
+    st.markdown(
+        '<p class="sv-sidebar-section-label">Session</p>',
+        unsafe_allow_html=True,
+    )
+ 
+    if st.session_state.get("_confirm_reset"):
+        st.warning("This clears all steps and temp files. Continue?")
+        col_y, col_n = st.columns(2)
+        with col_y:
+            if st.button("Yes, reset", key="btn_reset_confirm"):
+                _cleanup_temp()
+                st.session_state.clear()
+                st.rerun()
+        with col_n:
+            if st.button("Cancel", key="btn_reset_cancel"):
+                st.session_state["_confirm_reset"] = False
+                st.rerun()
+    else:
+        if st.button("🗑 Reset All Steps", key="btn_reset_prompt"):
+            st.session_state["_confirm_reset"] = True
+            st.rerun()
+ 
+    # ── Model info ────────────────────────────────────────────────────────────
+    st.markdown(
+        f'<div class="sv-model-badge">Model: {GEMINI_MODEL}</div>',
+        unsafe_allow_html=True,
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS  (6 tabs — Research & Script merged; Content Bundle last, optional)
@@ -3608,7 +4009,13 @@ with tab6:
 # ─────────────────────────────────────────────────────────────────────────────
 # FOOTER
 # ─────────────────────────────────────────────────────────────────────────────
-st.divider()
-st.caption(
-    f"SudoVid v2.0 | AI-Powered Script, Voice & Video Engine | "
+st.markdown(
+    f"""
+    <div class="sv-footer">
+        <span>SudoVid v2.0</span>
+        <span>Model: <code>{GEMINI_MODEL}</code></span>
+        <span>AI-Powered Script, Voice &amp; Video Engine</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )

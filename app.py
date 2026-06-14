@@ -950,7 +950,7 @@ audio {
     text-overflow: ellipsis;
 }
 .sv-phase-done    { background: var(--sv-green-dim); color: var(--sv-green) !important; }
-.sv-phase-active  { background: var(--sv-blue);      color: #ffffff          !important; font-weight: 600; }
+.sv-phase-active  { background: var(--sv-blue-dim);  color: var(--sv-blue)  !important; font-weight: 600; }
 .sv-phase-pending { background: var(--sv-surface-2); color: var(--sv-text-3) !important; }
  
 /* ── TAB 6: BUNDLE OUTPUT CARDS ──────────────────────────────────────────── */
@@ -1157,63 +1157,6 @@ audio {
 .sv-preflight-fail { color: var(--sv-red)   !important; font-weight: 700; }
 .sv-preflight-label { color: var(--sv-text) !important; flex: 1; }
 .sv-preflight-detail { color: var(--sv-text-2) !important; font-size: 0.74rem; }           
-
-/* \u2500\u2500 CARD SELECTION BUTTONS \u2014 selected state via data attribute \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
-/* All card buttons default to secondary (white/outlined) */
-/* Selected card: injected .sv-sel wrapper overrides the button inside */
-.sv-sel > div[data-testid="stButton"] > button,
-.sv-sel > div[data-testid="stButton"] > button:hover {
-    background-color: var(--sv-blue-dim) !important;
-    border: 2px solid var(--sv-blue) !important;
-    color: var(--sv-blue) !important;
-    font-weight: 700 !important;
-}
-/* Unselected card buttons \u2014 clean white/outlined */
-.sv-unsel > div[data-testid="stButton"] > button {
-    background-color: var(--sv-surface) !important;
-    border: 1px solid var(--sv-border) !important;
-    color: var(--sv-text) !important;
-    font-weight: 500 !important;
-}
-.sv-unsel > div[data-testid="stButton"] > button:hover {
-    border-color: var(--sv-blue) !important;
-    background-color: var(--sv-blue-dim) !important;
-    color: var(--sv-blue) !important;
-}
-/* \u2500\u2500 PROGRESS BAR \u2014 suppress built-in label text (fixes black-on-blue) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
-[data-testid="stProgress"] p {
-    display: none !important;
-}
-
-/* Progress label rendered separately below the bar \u2014 always readable */
-.sv-prog-label-text {
-    text-align: center;
-    font-size: 0.82rem;
-    color: var(--sv-text-2) !important;
-    margin: 4px 0 8px;
-}
-
-/* \u2500\u2500 DARK MODE TOKENS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
-@media (prefers-color-scheme: dark) {
-    :root {
-        --sv-bg:          #0f172a;
-        --sv-surface:     #1e293b;
-        --sv-surface-2:   #334155;
-        --sv-border:      #334155;
-        --sv-border-med:  #475569;
-        --sv-text:        #f1f5f9;
-        --sv-text-2:      #94a3b8;
-        --sv-text-3:      #64748b;
-        --sv-blue-dim:    #1e3a5f;
-        --sv-blue-border: #1d4ed8;
-        --sv-green-dim:   #14532d;
-        --sv-green-bdr:   #166534;
-        --sv-amber-dim:   #78350f;
-        --sv-amber-bdr:   #92400e;
-        --sv-red-dim:     #7f1d1d;
-        --sv-red-bdr:     #991b1b;
-    }
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -2958,10 +2901,19 @@ def _assembly_worker(audio_path, shot_list, mode, topic,
     try:
         cw, ch = _canvas(is_shorts)
 
-        # Issue 2 fix: no auto-fetch. Users supply clips via the upload section.
-        # trailer_clip shot types fall through to Pexels/text_card in _resolve_clip.
+        # ── Trailer (film mode only) ──────────────────────────────────────────
         trailer_path = None
         trailer_segs = []
+        if mode == MODE_FILM:
+            _write_progress(2, "Searching for official trailer…")
+            trailer_path = _download_trailer(topic)
+            if trailer_path:
+                n_segs = 4 if is_shorts else 8
+                trailer_segs = _extract_trailer_segments(
+                    trailer_path, num_segments=n_segs, seg_duration=8.0)
+                _write_progress(6, f"Trailer ready — {len(trailer_segs)} segments")
+            else:
+                _write_progress(6, "Trailer not found — using stills/Pexels only")
 
         # ── Build clips ───────────────────────────────────────────────────────
         total       = len(shot_list)
@@ -3513,7 +3465,7 @@ def _cleanup_temp():
 # ── HELPER: compute step states from session state ────────────────────────────
 def _step_states() -> list[dict]:
     """
-    Returns a list of 5 dicts, one per workflow step.
+    Returns a list of 6 dicts, one per workflow step.
     Each dict has: label, short (sidebar), done (bool), active (bool).
     'active' = the earliest incomplete step.
     """
@@ -3523,6 +3475,11 @@ def _step_states() -> list[dict]:
             "label": "Parameters",
             "short": "Params",
             "done":  "topic_param" in ss,
+        },
+        {
+            "label": "Media Upload",
+            "short": "Media",
+            "done":  "uploaded_media" in ss,
         },
         {
             "label": "Research & Script",
@@ -3537,7 +3494,7 @@ def _step_states() -> list[dict]:
         {
             "label": "Video Assembly",
             "short": "Video",
-            "done":  bool(ss.get("assembly_done")),
+            "done":  bool(ss.get("assembly_output")),
         },
         {
             "label": "Content Bundle",
@@ -3581,7 +3538,7 @@ def _render_hero():
             )
  
         short = s["short"]
-        connector = '<span class="sv-step-connector"></span>' if i < 4 else ""
+        connector = '<span class="sv-step-connector"></span>' if i < 5 else ""
         dots_html += (
             '<div class="sv-step-dot">'
             + circle
@@ -3769,12 +3726,13 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS  (6 tabs — Research & Script merged; Content Bundle last, optional)
 # ─────────────────────────────────────────────────────────────────────────────
-(tab1, tab2, tab3, tab4, tab5) = st.tabs([
+(tab1, tab2, tab3, tab4, tab5, tab6) = st.tabs([
     "1. Parameters",
-    "2. Research & Script",
-    "3. Voiceover",
-    "4. Video Assembly",
-    "5. Content Bundle",
+    "2. Media Upload",
+    "3. Research & Script",
+    "4. Voiceover",
+    "5. Video Assembly",
+    "6. Content Bundle",
 ])
 
 
@@ -3785,7 +3743,7 @@ with tab1:
     # ── Header ───────────────────────────────────────────────────────────────
     st.markdown(
         '<p class="sv-sidebar-section-label" style="margin-bottom:4px">'
-        'Step 1 of 5</p>',
+        'Step 1 of 6</p>',
         unsafe_allow_html=True,
     )
     st.subheader("Set Project Parameters & Angle")
@@ -3808,7 +3766,9 @@ with tab1:
     st.markdown("**Content Mode**")
     st.caption("Selects the research persona and visual strategy.")
  
-    # Issue 3 fix: native st.button() grid — selection is instant on click
+    # We still use a selectbox as the actual state holder (Streamlit needs it
+    # for session state persistence across reruns), but hide its label and
+    # render the card UI above it as pure HTML display only.
     mode_options = [MODE_FILM, MODE_TECH, MODE_EDU]
     mode_icons   = ["🎬", "🔍", "📚"]
     mode_hints   = [
@@ -3816,26 +3776,28 @@ with tab1:
         "Incidents, launches, deep dives",
         "Tutorials, explainers, dev content",
     ]
-
-    if "ui_mode" not in st.session_state:
-        st.session_state["ui_mode"] = MODE_FILM
-
-    _mode_cols = st.columns(3)
-    for _col, _opt, _icon, _hint in zip(_mode_cols, mode_options, mode_icons, mode_hints):
-        with _col:
-            _is_sel = st.session_state["ui_mode"] == _opt
-            _cls = "sv-sel" if _is_sel else "sv-unsel"
-            st.markdown(f'<div class="{_cls}">', unsafe_allow_html=True)
-            if st.button(
-                f"{_icon}\n**{_opt}**\n{_hint}",
-                key=f"mode_btn_{_opt}",
-                use_container_width=True,
-            ):
-                st.session_state["ui_mode"] = _opt
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    active_mode = st.session_state["ui_mode"]
+ 
+    # Render display cards (HTML only — clicking them drives the selectbox below)
+    saved_mode = st.session_state.get("mode_param", MODE_FILM)
+    cards_html = '<div class="sv-mode-grid">'
+    for opt, icon, hint in zip(mode_options, mode_icons, mode_hints):
+        sel = "sv-selected" if opt == saved_mode else ""
+        cards_html += (
+            f'<div class="sv-mode-card {sel}">'
+            f'<div class="sv-mode-icon">{icon}</div>'
+            f'<div class="sv-mode-name">{opt}</div>'
+            f'<div class="sv-mode-hint">{hint}</div>'
+            f'</div>'
+        )
+    cards_html += '</div>'
+    st.markdown(cards_html, unsafe_allow_html=True)
+ 
+    # The real selectbox — drives state, kept visible so user can also click it
+    active_mode = st.selectbox(
+        "Content Mode",
+        mode_options,
+        label_visibility="collapsed",
+    )
  
     st.divider()
  
@@ -3850,26 +3812,24 @@ with tab1:
     ]
     length_badges = ["9:16 · <1 min", "16:9 · 3–8 min", "16:9 · 10+ min"]
  
-    # Issue 3 fix: native st.button() grid for length selection
-    if "ui_length" not in st.session_state:
-        st.session_state["ui_length"] = length_options[0]
-
-    _len_cols = st.columns(3)
-    for _col, _opt, _badge in zip(_len_cols, length_options, length_badges):
-        with _col:
-            _is_sel = st.session_state["ui_length"] == _opt
-            _cls = "sv-sel" if _is_sel else "sv-unsel"
-            st.markdown(f'<div class="{_cls}">', unsafe_allow_html=True)
-            if st.button(
-                f"**{_opt}**\n{_badge}",
-                key=f"len_btn_{_opt}",
-                use_container_width=True,
-            ):
-                st.session_state["ui_length"] = _opt
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    video_length = st.session_state["ui_length"]
+    saved_len = st.session_state.get("length_param", length_options[0])
+    len_html = '<div class="sv-len-grid">'
+    for opt, badge in zip(length_options, length_badges):
+        sel = "sv-selected" if opt == saved_len else ""
+        len_html += (
+            f'<div class="sv-len-card {sel}">'
+            f'<div><span class="sv-len-name">{opt}</span>'
+            f'<span class="sv-len-badge">{badge}</span></div>'
+            f'</div>'
+        )
+    len_html += '</div>'
+    st.markdown(len_html, unsafe_allow_html=True)
+ 
+    video_length = st.selectbox(
+        "Target Video Length",
+        length_options,
+        label_visibility="collapsed",
+    )
  
     # ── Source material (Film mode only) ──────────────────────────────────────
     source_type = "Original"
@@ -3983,12 +3943,154 @@ with tab1:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 2 — RESEARCH & SCRIPT  (Media Upload moved to Video Assembly expander)
-# Two sequential buttons: Research first, then Generate Script.
+# TAB 2 — MEDIA UPLOAD  (NEW)
 # ─────────────────────────────────────────────────────────────────────────────
 with tab2:
-    st.subheader("Step 2: Research & Script")
+    st.markdown(
+        '<p class="sv-sidebar-section-label" style="margin-bottom:4px">'
+        'Step 2 of 6 — optional</p>',
+        unsafe_allow_html=True,
+    )
+    st.subheader("Upload Your Media")
+    st.caption(
+        "Upload your own clips and images. Gemini will analyse them and "
+        "the shot list will prefer them over any external source. "
+        "You can skip this step — the app will source visuals from Pexels and OpenVerse."
+    )
+ 
+    # ── Locked gate ───────────────────────────────────────────────────────────
+    if "topic_param" not in st.session_state:
+        _locked_gate([
+            ("Save Parameters (Tab 1)", False),
+        ])
+    else:
+        st.divider()
+ 
+        # ── Video upload ──────────────────────────────────────────────────────
+        st.markdown("**Video Clips**")
+        st.caption(
+            f"Supported: {', '.join(f'.{e}' for e in ALLOWED_VIDEO_TYPES)} — "
+            f"max 500 MB per file — multiple files allowed"
+        )
+        uploaded_videos = st.file_uploader(
+            "Upload video clips",
+            type=ALLOWED_VIDEO_TYPES,
+            accept_multiple_files=True,
+            key="video_uploader",
+            label_visibility="collapsed",
+        )
+ 
+        # ── Image upload ──────────────────────────────────────────────────────
+        st.markdown("**Images**")
+        st.caption(
+            f"Supported: {', '.join(f'.{e}' for e in ALLOWED_IMAGE_TYPES)} — "
+            f"max 50 MB per file — multiple files allowed"
+        )
+        uploaded_images = st.file_uploader(
+            "Upload images",
+            type=ALLOWED_IMAGE_TYPES,
+            accept_multiple_files=True,
+            key="image_uploader",
+            label_visibility="collapsed",
+        )
+ 
+        st.divider()
+ 
+        col_save, col_skip = st.columns([3, 1])
+        with col_save:
+            save_clicked = st.button(
+                "💾 Save & Analyse Media", use_container_width=True
+            )
+        with col_skip:
+            skip_clicked = st.button(
+                "Skip →", use_container_width=True
+            )
+ 
+        if skip_clicked:
+            st.session_state["uploaded_media"]  = []
+            st.session_state["media_analysis"]  = []
+            _complete_banner(
+                "Skipped — using Pexels & OpenVerse for visuals.",
+                "Go to 3. Research & Script",
+            )
+ 
+        if save_clicked:
+            if not api_key:
+                st.warning("⚠️ Gemini API Key required for analysis.")
+            else:
+                saved = []
+                for uf in (uploaded_videos or []):
+                    meta = _save_upload(uf, "video")
+                    if meta:
+                        saved.append(meta)
+                for uf in (uploaded_images or []):
+                    meta = _save_upload(uf, "image")
+                    if meta:
+                        saved.append(meta)
+ 
+                if saved:
+                    st.session_state["uploaded_media"] = saved
+                    with st.spinner(
+                        f"🔍 Analysing {len(saved)} file(s) with Gemini Vision…"
+                    ):
+                        analysis = analyse_uploaded_media(api_key, saved)
+                        st.session_state["media_analysis"] = analysis
+                else:
+                    st.session_state["uploaded_media"] = []
+                    st.session_state["media_analysis"] = []
+ 
+        # ── Analysis results ──────────────────────────────────────────────────
+        analysis = st.session_state.get("media_analysis", [])
+        if analysis:
+            st.divider()
+            st.markdown("**Media Analysis Results**")
+            for m in analysis:
+                icon = "🎬" if m.get("media_type") == "video" else "🖼️"
+                tags = m.get("content_tags", [])
+                tags_html = "".join(
+                    f'<span class="sv-media-tag">{t}</span>' for t in tags
+                ) if tags else ""
+                size_mb  = m.get("size_mb", "")
+                dur_secs = m.get("duration_seconds")
+                dur_str  = ""
+                if m.get("media_type") == "video" and dur_secs:
+                    dur_str = f" · {dur_secs:.0f}s"
+                st.markdown(
+                    '<div class="sv-media-item">'
+                    + f'<div class="sv-media-item-icon">{icon}</div>'
+                    + '<div class="sv-media-item-body">'
+                    + f'<p class="sv-media-item-name">{m["filename"]}</p>'
+                    + f'<p class="sv-media-item-row">{size_mb} MB{dur_str}</p>'
+                    + f'<p class="sv-media-item-row">'
+                    + f'<b>Subjects:</b> {m.get("dominant_subjects", "—")}'
+                    + f' &nbsp;·&nbsp; <b>Mood:</b> {m.get("mood", "—")}'
+                    + f'</p>'
+                    + f'<p class="sv-media-item-row">'
+                    + f'<b>Suggested use:</b> {m.get("suggested_use", "—")}'
+                    + f'</p>'
+                    + (f'<div class="sv-media-item-tags">{tags_html}</div>'
+                       if tags_html else "")
+                    + '</div>'
+                    + '</div>',
+                    unsafe_allow_html=True,
+                )
+            _complete_banner(
+                f"{len(analysis)} file(s) analysed and ready.",
+                "Go to 3. Research & Script",
+            )
+        elif st.session_state.get("uploaded_media") == []:
+            _complete_banner(
+                "Skipped — using Pexels & OpenVerse for visuals.",
+                "Go to 3. Research & Script",
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 3 — RESEARCH & SCRIPT  (merged)
+# Two sequential buttons: Research first, then Generate Script.
+# Research runs in the background; the briefing is shown collapsed so it
+# doesn't block the eye path to the Generate Script button below it.
+# ─────────────────────────────────────────────────────────────────────────────
 with tab3:
     st.subheader("Step 3: Research & Script")
 
@@ -4146,7 +4248,7 @@ with tab3:
                     )
                     _complete_banner(
                         "Script ready!",
-                        "Go to 3. Voiceover",
+                        "Go to 4. Voiceover",
                     )
 
 
@@ -4156,7 +4258,7 @@ with tab3:
 if "final_script_text" not in st.session_state:
         _locked_gate([
             ("Save Parameters (Tab 1)",  "topic_param" in st.session_state),
-            ("Generate Script (Tab 2)",  False),
+            ("Generate Script (Tab 3)",  False),
         ])
         st.stop()
 VOICES = [
@@ -4175,10 +4277,10 @@ VOICES = [
     ("en-US-AvaNeural",         "Ava",         "Engaging",            "F"),
 ]
  
-with tab3:
+with tab4:
     st.markdown(
         '<p class="sv-sidebar-section-label" style="margin-bottom:4px">'
-        'Step 3 of 5</p>',
+        'Step 4 of 6</p>',
         unsafe_allow_html=True,
     )
     st.subheader("AI Voiceover Studio")
@@ -4189,35 +4291,45 @@ with tab3:
     # ── Voice card grid ───────────────────────────────────────────────────────
     st.markdown("**Select Narrator (US English)**")
  
-    # Issue 3 fix: native st.button() grid — clicking instantly selects voice, no dropdown
+    # Use session state to track selected voice across reruns
     if "voice_id" not in st.session_state:
         st.session_state["voice_id"] = VOICES[0][0]
-
-    st.caption("Click a voice card to select it — instant, no dropdown needed.")
-    _voice_rows = [VOICES[i:i+2] for i in range(0, len(VOICES), 2)]
-    for _vrow in _voice_rows:
-        _vcols = st.columns(2)
-        for _vcol, (_v_id, _v_name, _v_style, _v_gender) in zip(_vcols, _vrow):
-            with _vcol:
-                _is_sel = st.session_state["voice_id"] == _v_id
-                _emoji  = "👨" if _v_gender == "M" else "👩"
-                _label  = f"{_emoji} **{_v_name}** — {_v_style}  `{_v_gender}`"
-                _cls = "sv-sel" if _is_sel else "sv-unsel"
-                st.markdown(f'<div class="{_cls}">', unsafe_allow_html=True)
-                if st.button(
-                    _label,
-                    key=f"voice_btn_{_v_id}",
-                    use_container_width=True,
-                ):
-                    st.session_state["voice_id"] = _v_id
-                    st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
-
-    voice_option = next(
-        ((_v[0], f"{_v[1]} ({_v[3]})") for _v in VOICES
-         if _v[0] == st.session_state["voice_id"]),
-        (VOICES[0][0], f"{VOICES[0][1]} ({VOICES[0][3]})")
+ 
+    # Render cards as HTML display
+    grid_html = '<div class="sv-voice-grid">'
+    for v_id, v_name, v_style, v_gender in VOICES:
+        sel   = "sv-selected" if v_id == st.session_state["voice_id"] else ""
+        emoji = "👨" if v_gender == "M" else "👩"
+        grid_html += (
+            f'<div class="sv-voice-card {sel}">'
+            f'<div class="sv-voice-avatar">{emoji}</div>'
+            f'<div>'
+            f'<div class="sv-voice-name">{v_name}</div>'
+            f'<div class="sv-voice-style">{v_style}</div>'
+            f'</div>'
+            f'<span class="sv-voice-gender">{v_gender}</span>'
+            f'</div>'
+        )
+    grid_html += '</div>'
+    st.markdown(grid_html, unsafe_allow_html=True)
+ 
+    # Hidden selectbox drives the actual voice selection
+    voice_names      = [v[1] for v in VOICES]
+    current_name_idx = next(
+        (i for i, v in enumerate(VOICES)
+         if v[0] == st.session_state["voice_id"]),
+        0,
     )
+    selected_name = st.selectbox(
+        "Select voice",
+        voice_names,
+        index=current_name_idx,
+        label_visibility="collapsed",
+    )
+    # Sync session state from selectbox
+    selected_voice = next(v for v in VOICES if v[1] == selected_name)
+    st.session_state["voice_id"] = selected_voice[0]
+    voice_option = (selected_voice[0], f"{selected_voice[1]} ({selected_voice[3]})")
  
     st.divider()
  
@@ -4257,48 +4369,35 @@ with tab3:
             st.error("Text box is empty.")
         else:
             with st.spinner(f"Synthesising with {voice_option[1]}…"):
-                _ap = generate_audio_sync(
+                audio_path = generate_audio_sync(
                     st.session_state["tab4_audio_text"], voice_option[0]
                 )
-                if _ap:
-                    # Issue 4 fix: store flag so player+download persist across re-runs
-                    st.session_state["last_audio_path"]  = _ap
-                    st.session_state["last_audio_ready"] = True
+                if audio_path:
+                    st.session_state["last_audio_path"] = audio_path
+                    st.audio(audio_path, format="audio/mp3")
+                    with open(audio_path, "rb") as af:
+                        st.download_button(
+                            "📥 Download Audio (.mp3)",
+                            data=af,
+                            file_name=(
+                                f"{st.session_state.get('topic_param','voiceover').replace(' ','_').lower()}"
+                                "_voiceover.mp3"
+                            ),
+                            mime="audio/mp3",
+                        )
                 else:
                     st.error("Audio generation failed. Check internet connection.")
-
-    # Issue 4 fix: player + download rendered OUTSIDE the button block so they
-    # survive the re-run triggered when the user clicks the download button.
-    if (st.session_state.get("last_audio_ready")
-            and os.path.exists(st.session_state.get("last_audio_path", ""))):
-        _audio_file = st.session_state["last_audio_path"]
-        st.audio(_audio_file, format="audio/mp3")
-        with open(_audio_file, "rb") as _af:
-            _audio_bytes = _af.read()
-        _slug = st.session_state.get("topic_param", "voiceover").replace(" ", "_").lower()
-        st.download_button(
-            "📥 Download Audio (.mp3)",
-            data=_audio_bytes,
-            file_name=f"{_slug}_voiceover.mp3",
-            mime="audio/mp3",
-            key="dl_audio_persistent",
-        )
-        _complete_banner(
-            "Voiceover ready!",
-            "Go to 4. Video Assembly",
-        )
+            _complete_banner(
+                "Voiceover ready!",
+                "Go to 5. Video Assembly",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 4 — VIDEO ASSEMBLY
+# TAB 5 — VIDEO ASSEMBLY
 # ─────────────────────────────────────────────────────────────────────────────
-with tab4:
-    st.markdown(
-        '<p class="sv-sidebar-section-label" style="margin-bottom:4px">'
-        'Step 4 of 5</p>',
-        unsafe_allow_html=True,
-    )
-    st.subheader("Video Assembly")
+with tab5:
+    st.subheader("Step 5: Video Assembly")
 
     mode       = st.session_state.get("mode_param", "")
     topic_val  = st.session_state.get("topic_param", "")
@@ -4311,96 +4410,6 @@ with tab4:
     if mode:
         shorts_badge = " — 📱 **Shorts 9:16**" if is_shorts else " — 🖥️ **Landscape 16:9**"
         st.info(f"Mode: **{mode_labels.get(mode, mode)}** — Topic: **{topic_val}**{shorts_badge}")
-
-    # Issue 1+2: Media Upload expander (moved from old Tab 2) + copyright disclaimer
-    with st.expander("📁 Upload Your Own Media — clips & images (optional)", expanded=False):
-        st.warning(
-            "⚠️ **Copyright disclaimer:** Only upload media you own outright or have "
-            "explicit rights to use. You are solely responsible for ensuring all "
-            "uploaded clips and images are free of third-party copyright restrictions. "
-            "SudoVid does not fetch or use any copyrighted trailer or clip "
-            "from third-party platforms."
-        )
-        if "topic_param" not in st.session_state:
-            st.info("🔒 Save Parameters in Tab 1 first to enable media upload.")
-        else:
-            st.caption(
-                "Upload your own clips and images. Gemini will analyse them and "
-                "the shot list will prefer them over any external source."
-            )
-            st.markdown("**Video Clips**")
-            st.caption(
-                f"Supported: {', '.join(f'.{e}' for e in ALLOWED_VIDEO_TYPES)} — "
-                f"max 500 MB per file — multiple files allowed"
-            )
-            _uv = st.file_uploader(
-                "Upload video clips",
-                type=ALLOWED_VIDEO_TYPES,
-                accept_multiple_files=True,
-                key="video_uploader",
-                label_visibility="collapsed",
-            )
-            st.markdown("**Images**")
-            st.caption(
-                f"Supported: {', '.join(f'.{e}' for e in ALLOWED_IMAGE_TYPES)} — "
-                f"max 50 MB per file — multiple files allowed"
-            )
-            _ui = st.file_uploader(
-                "Upload images",
-                type=ALLOWED_IMAGE_TYPES,
-                accept_multiple_files=True,
-                key="image_uploader",
-                label_visibility="collapsed",
-            )
-            _col_s, _col_sk = st.columns([3, 1])
-            with _col_s:
-                _save_m = st.button("💾 Save & Analyse Media",
-                                    use_container_width=True, key="btn_save_media")
-            with _col_sk:
-                _skip_m = st.button("Skip →", use_container_width=True, key="btn_skip_media")
-            if _skip_m:
-                st.session_state["uploaded_media"] = []
-                st.session_state["media_analysis"] = []
-                st.success("Skipped — visuals sourced from Pexels and OpenVerse.")
-            if _save_m:
-                if not api_key:
-                    st.warning("⚠️ Gemini API Key required for media analysis.")
-                else:
-                    _saved = []
-                    for _uf in (_uv or []):
-                        _m = _save_upload(_uf, "video")
-                        if _m: _saved.append(_m)
-                    for _uf in (_ui or []):
-                        _m = _save_upload(_uf, "image")
-                        if _m: _saved.append(_m)
-                    if _saved:
-                        st.session_state["uploaded_media"] = _saved
-                        with st.spinner(f"🔍 Analysing {len(_saved)} file(s) with Gemini Vision…"):
-                            st.session_state["media_analysis"] = analyse_uploaded_media(api_key, _saved)
-                        st.success(f"✅ {len(st.session_state['media_analysis'])} file(s) analysed.")
-                    else:
-                        st.session_state["uploaded_media"] = []
-                        st.session_state["media_analysis"] = []
-            _ar = st.session_state.get("media_analysis", [])
-            if _ar:
-                st.markdown("**Media Analysis Results**")
-                for _m in _ar:
-                    _icon = "🎬" if _m.get("media_type") == "video" else "🖼️"
-                    _tags = "".join(f'<span class="sv-media-tag">{t}</span>' for t in _m.get("content_tags", []))
-                    _ds = f" · {_m['duration_seconds']:.0f}s" if _m.get("media_type") == "video" and _m.get("duration_seconds") else ""
-                    st.markdown(
-                        '<div class="sv-media-item">'
-                        + f'<div class="sv-media-item-icon">{_icon}</div>'
-                        + '<div class="sv-media-item-body">'
-                        + f'<p class="sv-media-item-name">{_m["filename"]}</p>'
-                        + f'<p class="sv-media-item-row">{_m.get("size_mb","?")} MB{_ds}</p>'
-                        + f'<p class="sv-media-item-row"><b>Subjects:</b> {_m.get("dominant_subjects","—")}'
-                        + f' &nbsp;·&nbsp; <b>Mood:</b> {_m.get("mood","—")}</p>'
-                        + f'<p class="sv-media-item-row"><b>Use:</b> {_m.get("suggested_use","—")}</p>'
-                        + (f'<div class="sv-media-item-tags">{_tags}</div>' if _tags else "")
-                        + '</div></div>',
-                        unsafe_allow_html=True,
-                    )
 
     # Media summary
     media_analysis = st.session_state.get("media_analysis", [])
@@ -4491,20 +4500,33 @@ with tab4:
         st.stop()   # halt rendering of this tab — nothing below runs
     else:
         # fall through to existing Film-mode trailer / shot list / assembly code
-        # Issue 2 fix: trailer auto-fetch removed. Users upload their own clips above.
+        # Film-mode trailer pre-fetch
         if mode == MODE_FILM:
-            st.info(
-                "🎬 **Clips & trailers:** Upload your own video clips in the "
-                "'Upload Your Own Media' section above. You are responsible for "
-                "ensuring all uploaded content is free of copyright restrictions."
+            st.caption(
+                "ℹ️ Trailers sourced from hd-trailers.net → Apple CDN, "
+                "Apple XML feed, IMDb, and Internet Archive — no extra keys needed."
             )
+            if st.button("🎞️ Pre-fetch Trailer (optional but recommended)"):
+                with st.spinner(f"Fetching {topic_val} trailer…"):
+                    tp = _download_trailer(topic_val)
+                    if tp:
+                        segs = _extract_trailer_segments(tp)
+                        st.session_state["trailer_path"] = tp
+                        st.session_state["trailer_segs"] = segs
+                        st.success(f"✅ Trailer ready — {len(segs)} segments")
+                    else:
+                        st.session_state["trailer_path"] = None
+                        st.session_state["trailer_segs"] = []
+                        st.warning(
+                            "Trailer not found. Assembly will use user uploads + Pexels/OpenVerse."
+                        )
 
         # Shot list generation
         if st.button("🎬 Generate Shot List"):
+            trailer_available = bool(st.session_state.get("trailer_path"))
             with st.spinner("Gemini is planning your shot list…"):
-                # Issue 2 fix: has_trailer always False — users supply their own clips
                 st.session_state["shot_list"] = generate_shot_list(
-                    api_key, has_trailer=False, is_shorts=is_shorts)
+                    api_key, has_trailer=trailer_available, is_shorts=is_shorts)
 
         if "shot_list" in st.session_state:
             sl        = st.session_state["shot_list"]
@@ -4559,8 +4581,7 @@ with tab4:
             if "assembly_running" not in st.session_state:
                 st.session_state["assembly_running"] = False
 
-            if (not st.session_state["assembly_running"]
-                    and not st.session_state.get("assembly_done")):
+            if not st.session_state["assembly_running"]:
                 if st.button("🚀 Start Video Assembly"):
                     _write_progress(0, "Initialising…")
                     st.session_state["assembly_running"] = True
@@ -4591,19 +4612,94 @@ with tab4:
                     st.session_state["assembly_running"] = False
                 elif prog.get("done") and prog.get("pct", 0) == 100:
                     st.session_state["assembly_running"] = False
-                    st.session_state["assembly_done"]    = True
-                    st.rerun()
+                    st.success("✅ Video assembled successfully!")
+                    out = st.session_state.get("assembly_output", output_path)
+                    if os.path.exists(out):
+                        with open(out, "rb") as f:
+                            st.download_button(
+                                "📥 Download MP4", data=f,
+                                file_name=(
+                                    f"{topic_val.replace(' ','_').lower()}"
+                                    f"{'_shorts' if is_shorts else ''}_video.mp4"
+                                ),
+                                mime="video/mp4",
+                            )
+                    # ── NLE Project Export ───────────────────────────────
+                    st.markdown("---")
+                    st.markdown("#### 🎞️ Export for Editing")
+                    st.caption(
+                        "Download a ready-to-open project file with all media "
+                        "included. Open in your NLE and edit freely."
+                    )
+                    manifest_exists = os.path.exists(MANIFEST_FILE)
+                    col_k, col_f = st.columns(2)
+
+                    with col_k:
+                        if manifest_exists:
+                            if st.button("📦 Build KDEnlive Project (.zip)",
+                                         key="btn_kdenlive"):
+                                with st.spinner("Packaging KDEnlive project…"):
+                                    zip_bytes = generate_kdenlive_project(
+                                        MANIFEST_FILE, topic_val)
+                                if zip_bytes:
+                                    safe = re.sub(r"[^a-zA-Z0-9_-]", "_",
+                                                  topic_val)[:40]
+                                    st.download_button(
+                                        "⬇️ Download KDEnlive ZIP",
+                                        data=zip_bytes,
+                                        file_name=f"{safe}_kdenlive.zip",
+                                        mime="application/zip",
+                                        key="dl_kdenlive",
+                                    )
+                                else:
+                                    st.error("KDEnlive export failed.")
+                        st.caption(
+                            "KDEnlive 22+ · Unzip, open `.kdenlive` · "
+                            "All media bundled in `media/` folder"
+                        )
+
+                    with col_f:
+                        if manifest_exists:
+                            if st.button("🎬 Export FCPXML (.fcpxml)",
+                                         key="btn_fcpxml"):
+                                with st.spinner("Generating FCPXML…"):
+                                    fcpxml_str = generate_fcpxml(
+                                        MANIFEST_FILE, topic_val)
+                                if fcpxml_str:
+                                    safe = re.sub(r"[^a-zA-Z0-9_-]", "_",
+                                                  topic_val)[:40]
+                                    st.download_button(
+                                        "⬇️ Download FCPXML",
+                                        data=fcpxml_str.encode("utf-8"),
+                                        file_name=f"{safe}.fcpxml",
+                                        mime="application/xml",
+                                        key="dl_fcpxml",
+                                    )
+                                else:
+                                    st.error("FCPXML export failed.")
+                        st.caption(
+                            "DaVinci Resolve · Final Cut Pro · Premiere Pro · "
+                            "File → Import → Timeline"
+                        )
+                    # ─────────────────────────────────────────────────────────
+
+                    st.info(
+                        "💡 Head to **Tab 6 — Content Bundle** whenever you're "
+                        "ready to generate your title, description, tags, and "
+                        "thumbnail prompt. It's optional and can be done any time."
+                    )
+                    if st.button("🔄 Reset & Assemble Again"):
+                        for k in ("shot_list", "assembly_running",
+                                  "assembly_output", "trailer_path", "trailer_segs"):
+                            st.session_state.pop(k, None)
+                        st.rerun()
                 else:
                     pct = prog.get("pct", 0)
                     msg = prog.get("msg", "Working…")
                      # ── Phase-labelled progress ───────────────────────────────
                     pct = prog.get("pct", 0)
                     msg = prog.get("msg", "Working…")
-                    st.progress(pct / 100)
-                    st.markdown(
-                        f'<p class="sv-prog-label-text">{msg} ({pct}%)</p>',
-                        unsafe_allow_html=True,
-                    )
+                    st.progress(pct / 100, text=f"{msg} ({pct}%)")
  
                     # Derive phase from pct ranges
                     phases = [
@@ -4630,91 +4726,7 @@ with tab4:
                     st.caption("⏳ Keep this browser tab open during assembly.")
                     time.sleep(3)
                     st.rerun()
-
-        # Issue 4+6 fix: persistent download section outside the running block
-        if st.session_state.get("assembly_done"):
-            _out = st.session_state.get("assembly_output", output_path)
-            if os.path.exists(_out):
-                st.success("✅ Video assembled successfully!")
-                with open(_out, "rb") as _vf:
-                    _video_bytes = _vf.read()
-                _vslug   = topic_val.replace(" ", "_").lower()
-                _vsuffix = "_shorts" if is_shorts else ""
-                st.download_button(
-                    "📥 Download MP4",
-                    data=_video_bytes,
-                    file_name=f"{_vslug}{_vsuffix}_video.mp4",
-                    mime="video/mp4",
-                    key="dl_video_persistent",
-                )
-                st.markdown("---")
-                st.markdown("#### 🎞️ Export for Editing")
-                st.caption(
-                    "Download a ready-to-open project file with all media "
-                    "included. Open in your NLE and edit freely."
-                )
-                _manifest_exists = os.path.exists(MANIFEST_FILE)
-                _col_k, _col_f = st.columns(2)
-                with _col_k:
-                    if _manifest_exists:
-                        if st.button("📦 Build KDEnlive Project (.zip)",
-                                     key="btn_kdenlive"):
-                            with st.spinner("Packaging KDEnlive project…"):
-                                _zip_bytes = generate_kdenlive_project(
-                                    MANIFEST_FILE, topic_val)
-                            if _zip_bytes:
-                                _safe = re.sub(r"[^a-zA-Z0-9_-]", "_", topic_val)[:40]
-                                st.session_state["kdenlive_zip"]  = _zip_bytes
-                                st.session_state["kdenlive_name"] = _safe
-                            else:
-                                st.error("KDEnlive export failed.")
-                        if "kdenlive_zip" in st.session_state:
-                            st.download_button(
-                                "⬇️ Download KDEnlive ZIP",
-                                data=st.session_state["kdenlive_zip"],
-                                file_name=f"{st.session_state['kdenlive_name']}_kdenlive.zip",
-                                mime="application/zip",
-                                key="dl_kdenlive_persistent",
-                            )
-                    st.caption(
-                        "KDEnlive 22+ · Unzip, open `.kdenlive` · "
-                        "All media bundled in `media/` folder"
-                    )
-                with _col_f:
-                    if _manifest_exists:
-                        if st.button("🎬 Export FCPXML (.fcpxml)",
-                                     key="btn_fcpxml"):
-                            with st.spinner("Generating FCPXML…"):
-                                _fcpxml_str = generate_fcpxml(MANIFEST_FILE, topic_val)
-                            if _fcpxml_str:
-                                _safe = re.sub(r"[^a-zA-Z0-9_-]", "_", topic_val)[:40]
-                                st.session_state["fcpxml_bytes"] = _fcpxml_str.encode("utf-8")
-                                st.session_state["fcpxml_name"]  = _safe
-                            else:
-                                st.error("FCPXML export failed.")
-                        if "fcpxml_bytes" in st.session_state:
-                            st.download_button(
-                                "⬇️ Download FCPXML",
-                                data=st.session_state["fcpxml_bytes"],
-                                file_name=f"{st.session_state['fcpxml_name']}.fcpxml",
-                                mime="application/xml",
-                                key="dl_fcpxml_persistent",
-                            )
-                    st.caption(
-                        "DaVinci Resolve · Final Cut Pro · Premiere Pro · "
-                        "File → Import → Timeline"
-                    )
-                st.info(
-                    "💡 Head to **Tab 5 — Content Bundle** whenever you're ready "
-                    "to generate your title, description, tags, and thumbnail prompt. "
-                    "It's optional and can be done any time."
-                )
-                if st.button("🔄 Reset & Assemble Again", key="btn_reassemble"):
-                    for _k in ("shot_list", "assembly_running", "assembly_output",
-                               "assembly_done", "kdenlive_zip", "kdenlive_name",
-                               "fcpxml_bytes", "fcpxml_name", "trailer_path",
-                               "trailer_segs"):
-                        st.session_state.pop(_k, None)
+                    time.sleep(3)
                     st.rerun()
 
 
@@ -4726,10 +4738,10 @@ with tab4:
 # other video streaming platforms — each may need platform-specific field
 # names, description length limits, and tag formats.
 # ─────────────────────────────────────────────────────────────────────────────
-with tab5:
+with tab6:
     st.markdown(
         '<p class="sv-sidebar-section-label" style="margin-bottom:4px">'
-        'Step 5 of 5 — optional</p>',
+        'Step 6 of 6 — optional</p>',
         unsafe_allow_html=True,
     )
     st.subheader("Content Bundle")
@@ -4742,19 +4754,19 @@ with tab5:
  
     bundle_source = st.radio(
         "Base the bundle on:",
-        ["Generated script (Tab 2)", "Final voiceover text (Tab 3)"],
+        ["Generated script (Tab 3)", "Final voiceover text (Tab 4)"],
     )
  
     if st.button("📦 Generate Content Bundle", use_container_width=True):
         target_text = (
             st.session_state.get("final_script_text", "")
-            if bundle_source == "Generated script (Tab 2)"
+            if bundle_source == "Generated script (Tab 3)"
             else st.session_state.get("tab4_audio_text", "")
         )
         if not api_key:
             st.error("⚠️ Gemini API Key required.")
         elif not target_text.strip():
-            st.error("⚠️ No script text found. Complete Step 2 first.")
+            st.error("⚠️ No script text found. Complete Step 3 first.")
         else:
             with st.spinner("Generating content metadata…"):
                 st.session_state["yt_bundle"] = generate_youtube_bundle(
@@ -4850,13 +4862,9 @@ with tab5:
                 key="bundle_thumb_edit",
             )
  
-            st.markdown(
-                '<div class="sv-complete-banner">'
-                '<span class="sv-complete-text">✓ Content bundle ready! '
-                'Your video project is complete.</span>'
-                '<span class="sv-complete-cta">🎉 All steps done!</span>'
-                '</div>',
-                unsafe_allow_html=True,
+            _complete_banner(
+                "Content bundle ready!",
+                "Head to 5. Video Assembly",
             )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4865,7 +4873,7 @@ with tab5:
 st.markdown(
     f"""
     <div class="sv-footer">
-        <span>SudoVid v2.1</span>
+        <span>SudoVid v2.0</span>
         <span>Model: <code>{GEMINI_MODEL}</code></span>
         <span>AI-Powered Script, Voice &amp; Video Engine</span>
     </div>

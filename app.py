@@ -1167,17 +1167,17 @@ audio {
     color: inherit !important;
 }
 
-/* ── NATIVE RADIO CARDS (Perfect Grid & Equal Heights Fix) ─────────────── */
+/* ── NATIVE RADIO CARDS (Perfect Grid & Hidden Circles) ────────────────── */
 [data-testid="stRadio"] > div[role="radiogroup"][aria-orientation="horizontal"] {
     display: flex !important;
     flex-direction: row !important;
     flex-wrap: wrap !important;
-    align-items: stretch !important; /* Stretches outer container */
+    align-items: stretch !important; 
     gap: 12px !important;
 }
 
 [data-testid="stRadio"] > div[role="radiogroup"] > label {
-    flex: 1 1 0% !important; /* Equal widths */
+    flex: 1 1 0% !important; 
     min-width: 140px !important;
     background-color: var(--sv-surface) !important;
     border: 1px solid var(--sv-border) !important;
@@ -1186,15 +1186,24 @@ audio {
     margin: 0 !important;
     transition: all 0.2s ease !important;
     cursor: pointer !important;
-    /* Make the label itself a flex column */
     display: flex !important;
     flex-direction: column !important;
+    justify-content: center !important;
 }
 
-/* Crucial: Force Streamlit's inner div to fill the stretched height */
+/* 1. HIDE THE NATIVE RADIO CIRCLE COMPLETELY */
 [data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child {
-    height: 100% !important;
-    align-items: flex-start !important;
+    display: none !important;
+}
+
+/* 2. CENTER THE TEXT INSIDE THE CARD */
+[data-testid="stRadio"] > div[role="radiogroup"] > label > div:nth-child(2) {
+    margin-left: 0 !important;
+    width: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    text-align: center !important;
 }
 
 [data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
@@ -1207,27 +1216,24 @@ audio {
     background-color: var(--sv-blue-dim) !important;
 }
 
-[data-testid="stRadio"] > div[role="radiogroup"] > label * {
-    color: var(--sv-text) !important;
-}
-
-[data-testid="stRadio"] > div[role="radiogroup"] > label > div > div:last-child p {
-    font-size: 0.78rem !important;
-    color: var(--sv-text-2) !important;
-    margin-top: 2px !important;
-}
-
 /* ── FIX SLIDER TEXT CONTRAST (Tuning Matrix) ──────────────────────────── */
-[data-testid="stSlider"] [data-testid="stTickBar"] div {
+/* Target the inactive text */
+[data-testid="stTickBar"] div {
     color: var(--sv-text-2) !important;
 }
 
-/* Streamlit injects an inline 'color' style for the active tick. Target that! */
-[data-testid="stSlider"] [data-testid="stTickBar"] div[style*="color"] {
-    color: #ffffff !important;
+/* Target the active text container to give it the blue bubble */
+[data-testid="stTickBar"] div[style*="font-weight"] {
     background-color: var(--sv-blue) !important;
     padding: 2px 8px !important;
     border-radius: 4px !important;
+}
+
+/* NUCLEAR OVERRIDE: Force the text inside the active bubble to be white */
+[data-testid="stTickBar"] div[style*="font-weight"],
+[data-testid="stTickBar"] div[style*="font-weight"] * {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important; 
 }
 
 /* ── PROGRESS BAR TEXT FIX (Issue 5) ───────────────────────────────────── */

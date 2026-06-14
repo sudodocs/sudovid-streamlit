@@ -760,9 +760,276 @@ audio {
     border: 1px solid var(--sv-border);
     padding: 1px 5px;
     border-radius: 4px;
+}
+/* ── TAB 1: MODE SELECTOR CARDS ─────────────────────────────────────────── */
+.sv-mode-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 18px;
+}
+.sv-mode-card {
+    border: 1px solid var(--sv-border);
+    border-radius: var(--sv-radius-lg);
+    padding: 14px 12px;
+    cursor: pointer;
+    background: var(--sv-surface);
+    text-align: center;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.sv-mode-card:hover {
+    border-color: var(--sv-blue);
+    background-color: var(--sv-blue-dim);
+}
+.sv-mode-card.sv-selected {
+    border: 2px solid var(--sv-blue);
+    background-color: var(--sv-blue-dim);
+}
+.sv-mode-icon { font-size: 22px; margin-bottom: 6px; }
+.sv-mode-name {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--sv-text) !important;
+    margin: 0 0 3px;
+}
+.sv-mode-hint {
+    font-size: 0.72rem;
+    color: var(--sv-text-2) !important;
+    line-height: 1.4;
+}
+.sv-mode-card.sv-selected .sv-mode-name { color: var(--sv-blue) !important; }
+.sv-mode-card.sv-selected .sv-mode-hint { color: var(--sv-blue) !important; opacity: 0.8; }
+ 
+/* ── TAB 1: LENGTH CARDS ─────────────────────────────────────────────────── */
+.sv-len-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 18px;
+}
+.sv-len-card {
+    border: 1px solid var(--sv-border);
+    border-radius: var(--sv-radius);
+    padding: 10px 12px;
+    background: var(--sv-surface);
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+.sv-len-card.sv-selected {
+    border: 2px solid var(--sv-blue);
+    background-color: var(--sv-blue-dim);
+}
+.sv-len-name {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--sv-text) !important;
+    margin: 0 0 4px;
+    display: block;
+}
+.sv-len-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 1px 7px;
+    border-radius: 99px;
+    background: var(--sv-surface-2);
+    color: var(--sv-text-2) !important;
+    border: 1px solid var(--sv-border);
+}
+.sv-len-card.sv-selected .sv-len-name { color: var(--sv-blue) !important; }
+.sv-len-card.sv-selected .sv-len-badge {
+    background: var(--sv-surface);
+    color: var(--sv-blue) !important;
+    border-color: var(--sv-blue-border);
+}
+ 
+/* ── TAB 1: ANGLE CHAR COUNTER ───────────────────────────────────────────── */
+.sv-angle-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 4px;
+    font-size: 0.75rem;
+    color: var(--sv-text-3) !important;
+}
+.sv-char-count-warn { color: var(--sv-amber) !important; font-weight: 600; }
+ 
+/* ── TAB 3: SCRIPT STATS BAR ─────────────────────────────────────────────── */
+.sv-script-stats {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.sv-script-stat {
+    background: var(--sv-surface-2);
+    border: 1px solid var(--sv-border);
+    border-radius: var(--sv-radius-sm);
+    padding: 5px 12px;
+    font-size: 0.78rem;
+    color: var(--sv-text-2) !important;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+.sv-script-stat strong { color: var(--sv-blue) !important; font-weight: 700; }
+ 
+/* ── TAB 4: VOICE CARDS ──────────────────────────────────────────────────── */
+.sv-voice-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin-bottom: 16px;
+}
+.sv-voice-card {
+    border: 1px solid var(--sv-border);
+    border-radius: var(--sv-radius);
+    padding: 10px 12px;
+    cursor: pointer;
+    background: var(--sv-surface);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: border-color 0.15s ease;
+}
+.sv-voice-card:hover { border-color: var(--sv-blue); }
+.sv-voice-card.sv-selected {
+    border: 2px solid var(--sv-blue);
+    background: var(--sv-blue-dim);
+}
+.sv-voice-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
+    background: var(--sv-surface-2);
+}
+.sv-voice-card.sv-selected .sv-voice-avatar { background: var(--sv-blue-border); }
+.sv-voice-name {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--sv-text) !important;
+    margin: 0 0 2px;
+}
+.sv-voice-card.sv-selected .sv-voice-name { color: var(--sv-blue) !important; }
+.sv-voice-style {
+    font-size: 0.7rem;
+    color: var(--sv-text-2) !important;
+    margin: 0;
+}
+.sv-voice-gender {
+    margin-left: auto;
+    font-size: 0.68rem;
+    padding: 1px 7px;
+    border-radius: 99px;
+    border: 1px solid var(--sv-border);
+    color: var(--sv-text-3) !important;
+    background: var(--sv-surface-2);
+    flex-shrink: 0;
+}
+ 
+/* ── TAB 5: PHASE PROGRESS ───────────────────────────────────────────────── */
+.sv-phase-bar {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+    margin-bottom: 14px;
+}
+.sv-phase-pill {
+    flex: 1;
+    text-align: center;
+    font-size: 0.68rem;
+    padding: 4px 2px;
+    border-radius: var(--sv-radius-sm);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sv-phase-done    { background: var(--sv-green-dim); color: var(--sv-green) !important; }
+.sv-phase-active  { background: var(--sv-blue-dim);  color: var(--sv-blue)  !important; font-weight: 600; }
+.sv-phase-pending { background: var(--sv-surface-2); color: var(--sv-text-3) !important; }
+ 
+/* ── TAB 6: BUNDLE OUTPUT CARDS ──────────────────────────────────────────── */
+.sv-bundle-card {
+    border: 1px solid var(--sv-border);
+    border-radius: var(--sv-radius-lg);
+    padding: 14px 16px;
+    background: var(--sv-surface);
+    margin-bottom: 12px;
+}
+.sv-bundle-card-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--sv-text-3) !important;
+    margin: 0 0 8px;
+}
+.sv-bundle-title-text {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--sv-text) !important;
+    margin: 0;
+    line-height: 1.4;
+}
+.sv-thumbnail-card {
+    border: 1px solid var(--sv-blue-border);
+    border-radius: var(--sv-radius-lg);
+    background: var(--sv-blue-dim);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+}
+.sv-thumbnail-card .sv-bundle-card-label { color: var(--sv-blue) !important; }
+ 
+/* ── STEP COMPLETE BANNER ────────────────────────────────────────────────── */
+.sv-complete-banner {
+    background: var(--sv-green-dim);
+    border: 1px solid var(--sv-green-bdr);
+    border-radius: var(--sv-radius);
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.sv-complete-text {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--sv-green) !important;
+}
+.sv-complete-cta {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--sv-blue) !important;
+    background: var(--sv-surface);
+    border: 1px solid var(--sv-blue-border);
+    border-radius: var(--sv-radius-sm);
+    padding: 5px 12px;
+    cursor: pointer;
+    white-space: nowrap;
 }           
 </style>
 """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPER: step-complete banner (reused across tabs)
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+def _complete_banner(message: str, next_tab: str) -> None:
+    """Render a green completion banner with a next-step CTA label."""
+    st.markdown(
+        '<div class="sv-complete-banner">'
+        + '<span class="sv-complete-text">✓ ' + message + '</span>'
+        + '<span class="sv-complete-cta">' + next_tab + ' →</span>'
+        + '</div>',
+        unsafe_allow_html=True,
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -3295,61 +3562,191 @@ with st.sidebar:
 # TAB 1 — PARAMETERS
 # ─────────────────────────────────────────────────────────────────────────────
 with tab1:
-    st.subheader("Step 1: Set Project Parameters & Angle")
-    st.info("Define the scope, tone, and your unique perspective before the AI conducts its research.")
-
-    topic = st.text_input("Topic or Title",
-                           placeholder="e.g., Project Hail Mary, Crowdstrike Outage")
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        active_mode = st.selectbox("Content Mode", [MODE_FILM, MODE_TECH, MODE_EDU])
-    with col_b:
-        video_length = st.selectbox("Target Video Length", [
-            "YouTube Short (< 1 minute)",
-            "Mid-length (3-8 mins)",
-            "Deep Dive (10+ mins)",
-        ])
-
+    # ── Header ───────────────────────────────────────────────────────────────
+    st.markdown(
+        '<p class="sv-sidebar-section-label" style="margin-bottom:4px">'
+        'Step 1 of 6</p>',
+        unsafe_allow_html=True,
+    )
+    st.subheader("Set Project Parameters & Angle")
+    st.caption(
+        "Define the scope, tone, and your unique perspective "
+        "before the AI conducts its research."
+    )
+ 
+    st.divider()
+ 
+    # ── Topic ─────────────────────────────────────────────────────────────────
+    topic = st.text_input(
+        "Topic or Title",
+        placeholder="e.g. Project Hail Mary · CrowdStrike Outage · How Transformers Work",
+    )
+ 
+    st.divider()
+ 
+    # ── Content mode — visual cards backed by a hidden selectbox ─────────────
+    st.markdown("**Content Mode**")
+    st.caption("Selects the research persona and visual strategy.")
+ 
+    # We still use a selectbox as the actual state holder (Streamlit needs it
+    # for session state persistence across reruns), but hide its label and
+    # render the card UI above it as pure HTML display only.
+    mode_options = [MODE_FILM, MODE_TECH, MODE_EDU]
+    mode_icons   = ["🎬", "🔍", "📚"]
+    mode_hints   = [
+        "Reviews, analysis, cinematography",
+        "Incidents, launches, deep dives",
+        "Tutorials, explainers, dev content",
+    ]
+ 
+    # Render display cards (HTML only — clicking them drives the selectbox below)
+    saved_mode = st.session_state.get("mode_param", MODE_FILM)
+    cards_html = '<div class="sv-mode-grid">'
+    for opt, icon, hint in zip(mode_options, mode_icons, mode_hints):
+        sel = "sv-selected" if opt == saved_mode else ""
+        cards_html += (
+            f'<div class="sv-mode-card {sel}">'
+            f'<div class="sv-mode-icon">{icon}</div>'
+            f'<div class="sv-mode-name">{opt}</div>'
+            f'<div class="sv-mode-hint">{hint}</div>'
+            f'</div>'
+        )
+    cards_html += '</div>'
+    st.markdown(cards_html, unsafe_allow_html=True)
+ 
+    # The real selectbox — drives state, kept visible so user can also click it
+    active_mode = st.selectbox(
+        "Content Mode",
+        mode_options,
+        label_visibility="collapsed",
+    )
+ 
+    st.divider()
+ 
+    # ── Video length — visual cards backed by a hidden selectbox ─────────────
+    st.markdown("**Target Video Length**")
+    st.caption("Controls script length and output canvas format.")
+ 
+    length_options = [
+        "YouTube Short (< 1 minute)",
+        "Mid-length (3-8 mins)",
+        "Deep Dive (10+ mins)",
+    ]
+    length_badges = ["9:16 · <1 min", "16:9 · 3–8 min", "16:9 · 10+ min"]
+ 
+    saved_len = st.session_state.get("length_param", length_options[0])
+    len_html = '<div class="sv-len-grid">'
+    for opt, badge in zip(length_options, length_badges):
+        sel = "sv-selected" if opt == saved_len else ""
+        len_html += (
+            f'<div class="sv-len-card {sel}">'
+            f'<div><span class="sv-len-name">{opt}</span>'
+            f'<span class="sv-len-badge">{badge}</span></div>'
+            f'</div>'
+        )
+    len_html += '</div>'
+    st.markdown(len_html, unsafe_allow_html=True)
+ 
+    video_length = st.selectbox(
+        "Target Video Length",
+        length_options,
+        label_visibility="collapsed",
+    )
+ 
+    # ── Source material (Film mode only) ──────────────────────────────────────
     source_type = "Original"
     if active_mode == MODE_FILM:
-        source_type = st.radio("Source Material",
-                                ["Original", "Book", "Comic", "True Event", "Remake"],
-                                horizontal=True)
-
-    st.markdown('<div class="report-card">', unsafe_allow_html=True)
+        st.divider()
+        st.markdown("**Source Material**")
+        source_type = st.radio(
+            "Source Material",
+            ["Original", "Book", "Comic", "True Event", "Remake"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+ 
+    st.divider()
+ 
+    # ── Tuning matrix ─────────────────────────────────────────────────────────
+    st.markdown("**Tuning Matrix**")
+    st.caption("Shape the script's tone and analytical lens.")
+ 
+    st.markdown('<div class="sv-matrix">', unsafe_allow_html=True)
     matrix_data = {}
     if active_mode == MODE_FILM:
         c1, c2 = st.columns(2)
         with c1:
-            matrix_data["Theory"]   = st.select_slider("Film Theory Focus",
-                                        ["Formalist", "Psychological", "Auteur", "Montage"])
-            matrix_data["Visuals"]  = st.select_slider("Visual Signature",
-                                        ["Standard", "Stylized", "Iconic"])
+            matrix_data["Theory"] = st.select_slider(
+                "Film Theory Focus",
+                ["Formalist", "Psychological", "Auteur", "Montage"],
+            )
+            matrix_data["Visuals"] = st.select_slider(
+                "Visual Signature",
+                ["Standard", "Stylized", "Iconic"],
+            )
         with c2:
-            matrix_data["Fidelity"] = st.select_slider("Adaptation Fidelity",
-                                        ["Loose", "Balanced", "Literal"])
-            matrix_data["Tone"]     = st.selectbox("Narrative Tone",
-                                        ["Conversational", "Melancholic", "Frantic", "Academic"])
+            matrix_data["Fidelity"] = st.select_slider(
+                "Adaptation Fidelity",
+                ["Loose", "Balanced", "Literal"],
+            )
+            matrix_data["Tone"] = st.selectbox(
+                "Narrative Tone",
+                ["Conversational", "Melancholic", "Frantic", "Academic"],
+            )
     elif active_mode == MODE_TECH:
-        matrix_data["Severity"] = st.select_slider("Criticality", ["Bug", "Outage", "Crisis"])
-        matrix_data["Scope"]    = st.select_slider("User Impact",  ["Niche", "Widespread", "Global"])
+        matrix_data["Severity"] = st.select_slider(
+            "Criticality", ["Bug", "Outage", "Crisis"]
+        )
+        matrix_data["Scope"] = st.select_slider(
+            "User Impact", ["Niche", "Widespread", "Global"]
+        )
     else:
-        matrix_data["Complexity"] = st.select_slider("Knowledge Level",
-                                      ["Junior", "Senior", "Architect"])
-        matrix_data["Method"]     = st.select_slider("Pedagogical Style",
-                                      ["Theory", "Mixed", "Practical"])
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown("### ✍️ Your Unique Angle (Draft)")
-    st.caption("Upload your notes or type your perspective. The AI uses this to guide research.")
-    angle_file = st.file_uploader("Upload rough draft (.txt)", type=["txt"])
-    angle_text = st.text_area("Or type your angle here:", height=150,
-                               placeholder="E.g., I think the main character's arc was ruined because…")
-
-    if st.button("💾 Save Parameters & Proceed"):
+        matrix_data["Complexity"] = st.select_slider(
+            "Knowledge Level", ["Junior", "Senior", "Architect"]
+        )
+        matrix_data["Method"] = st.select_slider(
+            "Pedagogical Style", ["Theory", "Mixed", "Practical"]
+        )
+    st.markdown('</div>', unsafe_allow_html=True)
+ 
+    st.divider()
+ 
+    # ── Unique angle ──────────────────────────────────────────────────────────
+    st.markdown("**Your Unique Angle**")
+    st.caption(
+        "The AI researches to support your perspective specifically — "
+        "not to produce a generic summary."
+    )
+ 
+    angle_file = st.file_uploader(
+        "Upload rough draft (.txt)",
+        type=["txt"],
+        help="Optional — upload your notes as a .txt file instead of typing.",
+    )
+    angle_text = st.text_area(
+        "Or type your angle here:",
+        height=150,
+        placeholder="E.g. I think the main character's arc was ruined because…",
+    )
+ 
+    # Character counter
+    angle_len = len(angle_text)
+    count_cls = "sv-char-count-warn" if angle_len > 1800 else ""
+    st.markdown(
+        f'<div class="sv-angle-footer">'
+        f'<span class="{count_cls}">{angle_len} / 2000 characters</span>'
+        f'<span>or upload a .txt above</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+ 
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+ 
+    # ── Save button ───────────────────────────────────────────────────────────
+    if st.button("💾 Save Parameters & Proceed", use_container_width=True):
         final_angle = angle_text.strip() or (
-            angle_file.getvalue().decode("utf-8") if angle_file else "")
+            angle_file.getvalue().decode("utf-8") if angle_file else ""
+        )
         if not topic:
             st.error("⚠️ Please provide a Topic or Title.")
         elif not final_angle:
@@ -3361,7 +3758,10 @@ with tab1:
             st.session_state["source_param"] = source_type
             st.session_state["matrix_param"] = json.dumps(matrix_data)
             st.session_state["angle_param"]  = final_angle
-            st.success("✅ Parameters saved! Click **'2. Media Upload'**.")
+            _complete_banner(
+                "Parameters saved!",
+                "Go to 2. Media Upload",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3538,8 +3938,7 @@ with tab3:
                         st.text(p.get("raw"))
                 else:
                     st.success(f"### {p.get('viral_title')}")
-
-                    # Architecture details — collapsed, optional reading
+ 
                     with st.expander("📊 Script Architecture Details", expanded=False):
                         st.markdown("#### 🌍 Thematic Resonance")
                         st.warning(
@@ -3549,18 +3948,21 @@ with tab3:
                         st.write(p.get("thematic_resonance", {}).get("explanation"))
                         if st.session_state["mode_param"] == MODE_FILM:
                             for char in p.get("character_matrix", []):
+                                char_name  = char["name"]
+                                char_score = char["arc_score"]
                                 st.markdown(
-                                    f"**{char['name']}** "
+                                    f"**{char_name}** "
                                     f"<span class='metric-badge'>"
-                                    f"{char['arc_score']}/10</span>",
+                                    f"{char_score}/10</span>",
                                     unsafe_allow_html=True,
                                 )
-
+ 
                     st.markdown("### 📝 Script Editor")
                     st.info(
                         "💡 Edit freely below — this is exactly what flows into "
                         "Voiceover. Use commas or `---` for natural pauses."
                     )
+ 
                     fs = p.get("full_script", {})
                     default_text = "\n\n".join(filter(None, [
                         p.get("hook_script", ""),
@@ -3568,11 +3970,40 @@ with tab3:
                         fs.get("act2", ""), fs.get("act3", ""),
                         fs.get("outro", ""),
                     ]))
+ 
                     st.session_state["final_script_text"] = st.text_area(
                         "Final Polish:",
                         value=default_text.strip(),
                         height=400,
                     )
+ 
+                    # ── Script stats bar ──────────────────────────────────────
+                    script_body = st.session_state.get("final_script_text", "")
+                    word_count  = len(script_body.split()) if script_body else 0
+                    # ~130 wpm average narration pace
+                    read_mins   = round(word_count / 130, 1) if word_count else 0
+                    read_secs   = int(read_mins * 60)
+                    read_label  = (
+                        f"{read_mins} min"
+                        if read_mins >= 1
+                        else f"{read_secs}s"
+                    )
+                    char_count  = len(script_body)
+                    st.markdown(
+                        '<div class="sv-script-stats">'
+                        + '<div class="sv-script-stat">'
+                        + f'<strong>{word_count:,}</strong> words'
+                        + '</div>'
+                        + '<div class="sv-script-stat">'
+                        + f'<strong>{char_count:,}</strong> characters'
+                        + '</div>'
+                        + '<div class="sv-script-stat">'
+                        + f'≈ <strong>{read_label}</strong> voiceover'
+                        + '</div>'
+                        + '</div>',
+                        unsafe_allow_html=True,
+                    )
+ 
                     st.download_button(
                         "📥 Download Script (.txt)",
                         data=st.session_state["final_script_text"],
@@ -3581,76 +4012,145 @@ with tab3:
                         ),
                         mime="text/plain",
                     )
-                    st.success(
-                        "🎉 **Step 3 Complete!** Click **'4. Voiceover'** to continue."
+                    _complete_banner(
+                        "Script ready!",
+                        "Go to 4. Voiceover",
                     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4 — VOICEOVER
 # ─────────────────────────────────────────────────────────────────────────────
+VOICES = [
+    # (edge_tts_id, display_name, style_tag, gender)
+    ("en-US-ChristopherNeural", "Christopher", "Deep / Professional", "M"),
+    ("en-US-GuyNeural",         "Guy",         "Natural / Conversational", "M"),
+    ("en-US-EricNeural",        "Eric",        "Casual",              "M"),
+    ("en-US-RogerNeural",       "Roger",       "Confident",           "M"),
+    ("en-US-SteffanNeural",     "Steffan",     "Expressive",          "M"),
+    ("en-US-AndrewNeural",      "Andrew",      "Warm",                "M"),
+    ("en-US-BrianNeural",       "Brian",       "Crisp / News",        "M"),
+    ("en-US-AriaNeural",        "Aria",        "Clear",               "F"),
+    ("en-US-JennyNeural",       "Jenny",       "Conversational",      "F"),
+    ("en-US-MichelleNeural",    "Michelle",    "Bright",              "F"),
+    ("en-US-EmmaNeural",        "Emma",        "Friendly",            "F"),
+    ("en-US-AvaNeural",         "Ava",         "Engaging",            "F"),
+]
+ 
 with tab4:
-    st.subheader("Step 4: AI Voiceover Studio")
-    st.info("Turn your finalised script into professional audio.")
-
-    voice_option = st.selectbox("Select Narrator (US English)", [
-        ("en-US-ChristopherNeural", "Christopher (Male - Deep/Professional)"),
-        ("en-US-GuyNeural",         "Guy (Male - Natural/Conversational)"),
-        ("en-US-EricNeural",        "Eric (Male - Casual)"),
-        ("en-US-RogerNeural",       "Roger (Male - Confident)"),
-        ("en-US-SteffanNeural",     "Steffan (Male - Expressive)"),
-        ("en-US-AndrewNeural",      "Andrew (Male - Warm)"),
-        ("en-US-BrianNeural",       "Brian (Male - Crisp/News)"),
-        ("en-US-AriaNeural",        "Aria (Female - Clear)"),
-        ("en-US-JennyNeural",       "Jenny (Female - Conversational)"),
-        ("en-US-MichelleNeural",    "Michelle (Female - Bright)"),
-        ("en-US-EmmaNeural",        "Emma (Female - Friendly)"),
-        ("en-US-AvaNeural",         "Ava (Female - Engaging)"),
-    ], format_func=lambda x: x[1])
-
-    source_mode = st.radio("Choose Text Source for Voiceover:",
-                            ["Use Generated Script (from Tab 3)",
-                             "Upload Custom Text File (.txt)"])
+    st.markdown(
+        '<p class="sv-sidebar-section-label" style="margin-bottom:4px">'
+        'Step 4 of 6</p>',
+        unsafe_allow_html=True,
+    )
+    st.subheader("AI Voiceover Studio")
+    st.caption("Turn your finalised script into professional audio using Microsoft Neural voices.")
+ 
+    st.divider()
+ 
+    # ── Voice card grid ───────────────────────────────────────────────────────
+    st.markdown("**Select Narrator (US English)**")
+ 
+    # Use session state to track selected voice across reruns
+    if "voice_id" not in st.session_state:
+        st.session_state["voice_id"] = VOICES[0][0]
+ 
+    # Render cards as HTML display
+    grid_html = '<div class="sv-voice-grid">'
+    for v_id, v_name, v_style, v_gender in VOICES:
+        sel   = "sv-selected" if v_id == st.session_state["voice_id"] else ""
+        emoji = "👨" if v_gender == "M" else "👩"
+        grid_html += (
+            f'<div class="sv-voice-card {sel}">'
+            f'<div class="sv-voice-avatar">{emoji}</div>'
+            f'<div>'
+            f'<div class="sv-voice-name">{v_name}</div>'
+            f'<div class="sv-voice-style">{v_style}</div>'
+            f'</div>'
+            f'<span class="sv-voice-gender">{v_gender}</span>'
+            f'</div>'
+        )
+    grid_html += '</div>'
+    st.markdown(grid_html, unsafe_allow_html=True)
+ 
+    # Hidden selectbox drives the actual voice selection
+    voice_names      = [v[1] for v in VOICES]
+    current_name_idx = next(
+        (i for i, v in enumerate(VOICES)
+         if v[0] == st.session_state["voice_id"]),
+        0,
+    )
+    selected_name = st.selectbox(
+        "Select voice",
+        voice_names,
+        index=current_name_idx,
+        label_visibility="collapsed",
+    )
+    # Sync session state from selectbox
+    selected_voice = next(v for v in VOICES if v[1] == selected_name)
+    st.session_state["voice_id"] = selected_voice[0]
+    voice_option = (selected_voice[0], f"{selected_voice[1]} ({selected_voice[3]})")
+ 
+    st.divider()
+ 
+    # ── Text source ───────────────────────────────────────────────────────────
+    st.markdown("**Text Source**")
+    source_mode = st.radio(
+        "Choose Text Source for Voiceover:",
+        ["Use Generated Script (from Tab 3)", "Upload Custom Text File (.txt)"],
+        label_visibility="collapsed",
+    )
+ 
     text_to_synthesize = ""
     if source_mode == "Use Generated Script (from Tab 3)":
         text_to_synthesize = st.session_state.get("final_script_text", "")
         if not text_to_synthesize:
             st.warning("⚠️ No generated script found. Complete Step 3 first.")
     else:
-        uploaded_file = st.file_uploader("Upload .txt for Voiceover",
-                                          type=["txt"], key="voice_upload")
+        uploaded_file = st.file_uploader(
+            "Upload .txt for Voiceover", type=["txt"], key="voice_upload"
+        )
         if uploaded_file:
             text_to_synthesize = uploaded_file.getvalue().decode("utf-8")
             st.success("File uploaded!")
-
-    st.markdown("### Preview Text for Audio Generation")
+ 
+    st.divider()
+ 
+    st.markdown("**Preview Text for Audio Generation**")
     st.session_state["tab4_audio_text"] = st.text_area(
         "This exact text will be sent to the AI Voice:",
-        value=text_to_synthesize, height=250)
-
-    if st.button("🔊 Generate Voiceover"):
+        value=text_to_synthesize,
+        height=250,
+        label_visibility="collapsed",
+    )
+ 
+    if st.button("🔊 Generate Voiceover", use_container_width=True):
         if not st.session_state.get("tab4_audio_text", "").strip():
             st.error("Text box is empty.")
         else:
             with st.spinner(f"Synthesising with {voice_option[1]}…"):
                 audio_path = generate_audio_sync(
-                    st.session_state["tab4_audio_text"], voice_option[0])
+                    st.session_state["tab4_audio_text"], voice_option[0]
+                )
                 if audio_path:
                     st.session_state["last_audio_path"] = audio_path
-                    st.success("✅ Audio generated!")
                     st.audio(audio_path, format="audio/mp3")
-                    with open(audio_path, "rb") as f:
+                    with open(audio_path, "rb") as af:
                         st.download_button(
-                            "📥 Download Audio (.mp3)", data=f,
+                            "📥 Download Audio (.mp3)",
+                            data=af,
                             file_name=(
                                 f"{st.session_state.get('topic_param','voiceover').replace(' ','_').lower()}"
-                                f"_voiceover.mp3"
+                                "_voiceover.mp3"
                             ),
                             mime="audio/mp3",
                         )
                 else:
                     st.error("Audio generation failed. Check internet connection.")
-            st.success("🎉 **Step 4 Complete!** Click **'5. Video Assembly'** to continue.")
+            _complete_banner(
+                "Voiceover ready!",
+                "Go to 5. Video Assembly",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3932,8 +4432,36 @@ with tab5:
                 else:
                     pct = prog.get("pct", 0)
                     msg = prog.get("msg", "Working…")
+                     # ── Phase-labelled progress ───────────────────────────────
+                    pct = prog.get("pct", 0)
+                    msg = prog.get("msg", "Working…")
                     st.progress(pct / 100, text=f"{msg} ({pct}%)")
-                    st.caption("⏳ Keep this tab open.")
+ 
+                    # Derive phase from pct ranges
+                    phases = [
+                        ("Fetching media",    0,  30),
+                        ("Generating cards",  30, 50),
+                        ("Compositing",       50, 75),
+                        ("Adding audio",      75, 88),
+                        ("Credit overlay",    88, 95),
+                        ("Encoding MP4",      95, 100),
+                    ]
+                    pills_html = '<div class="sv-phase-bar">'
+                    for p_label, p_lo, p_hi in phases:
+                        if pct >= p_hi:
+                            cls = "sv-phase-done"
+                        elif pct >= p_lo:
+                            cls = "sv-phase-active"
+                        else:
+                            cls = "sv-phase-pending"
+                        pills_html += (
+                            f'<div class="sv-phase-pill {cls}">{p_label}</div>'
+                        )
+                    pills_html += '</div>'
+                    st.markdown(pills_html, unsafe_allow_html=True)
+                    st.caption("⏳ Keep this browser tab open during assembly.")
+                    time.sleep(3)
+                    st.rerun()
                     time.sleep(3)
                     st.rerun()
 
@@ -3947,22 +4475,25 @@ with tab5:
 # names, description length limits, and tag formats.
 # ─────────────────────────────────────────────────────────────────────────────
 with tab6:
-    st.subheader("Step 6: Content Bundle")
-    st.info(
-        "**Optional — complete this at any time**, before or after video assembly. "
-        "Generate your video title, description, tags, hashtags, and an AI "
-        "thumbnail prompt ready to paste into your platform of choice."
+    st.markdown(
+        '<p class="sv-sidebar-section-label" style="margin-bottom:4px">'
+        'Step 6 of 6 — optional</p>',
+        unsafe_allow_html=True,
     )
-
-    # Source selector — references updated tab numbers
+    st.subheader("Content Bundle")
+    st.caption(
+        "Generate your video title, description, tags, hashtags, and AI thumbnail "
+        "prompt. Can be done before or after video assembly."
+    )
+ 
+    st.divider()
+ 
     bundle_source = st.radio(
         "Base the bundle on:",
-        [
-            "Generated script (Tab 3)",
-            "Final voiceover text (Tab 4)",
-        ],
+        ["Generated script (Tab 3)", "Final voiceover text (Tab 4)"],
     )
-    if st.button("📦 Generate Content Bundle"):
+ 
+    if st.button("📦 Generate Content Bundle", use_container_width=True):
         target_text = (
             st.session_state.get("final_script_text", "")
             if bundle_source == "Generated script (Tab 3)"
@@ -3971,36 +4502,105 @@ with tab6:
         if not api_key:
             st.error("⚠️ Gemini API Key required.")
         elif not target_text.strip():
-            st.error(
-                "⚠️ No script text found. "
-                "Complete Step 3 (Research & Script) first."
-            )
+            st.error("⚠️ No script text found. Complete Step 3 first.")
         else:
             with st.spinner("Generating content metadata…"):
                 st.session_state["yt_bundle"] = generate_youtube_bundle(
-                    api_key, target_text)
-
+                    api_key, target_text
+                )
+ 
     if "yt_bundle" in st.session_state:
         bundle = st.session_state["yt_bundle"]
         if "error" in bundle:
             st.error(bundle["error"])
         else:
-            st.success("✅ Content Bundle Generated!")
-            st.markdown("### 📝 Metadata")
-            st.text_input("Viral Title",  value=bundle.get("viral_title",  ""))
-            st.text_area( "Description",  value=bundle.get("description",  ""), height=200)
-            c1, c2 = st.columns(2)
-            with c1:
-                st.text_area("Tags",     value=", ".join(bundle.get("tags",     [])), height=100)
-            with c2:
-                st.text_area("Hashtags", value=" ".join(bundle.get("hashtags", [])), height=100)
-            st.markdown("---")
-            st.markdown("### 🎨 AI Thumbnail Prompt")
-            st.caption("Paste into Midjourney, DALL-E, Canva, or any image generator.")
+            st.divider()
+ 
+            # ── Viral title card ──────────────────────────────────────────────
+            st.markdown(
+                '<div class="sv-bundle-card">'
+                '<p class="sv-bundle-card-label">Viral Title</p>'
+                + '<p class="sv-bundle-title-text">'
+                + bundle.get("viral_title", "")
+                + '</p>'
+                + '</div>',
+                unsafe_allow_html=True,
+            )
+            # Editable copy for easy tweaking
+            st.text_input(
+                "Edit title",
+                value=bundle.get("viral_title", ""),
+                label_visibility="collapsed",
+                key="bundle_title_edit",
+            )
+ 
+            # ── Description ───────────────────────────────────────────────────
+            st.markdown(
+                '<div class="sv-bundle-card">'
+                '<p class="sv-bundle-card-label">Description</p>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
             st.text_area(
-                "Image Prompt:",
+                "Description",
+                value=bundle.get("description", ""),
+                height=160,
+                label_visibility="collapsed",
+                key="bundle_desc_edit",
+            )
+ 
+            # ── Tags + hashtags ───────────────────────────────────────────────
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(
+                    '<div class="sv-bundle-card" style="margin-bottom:8px">'
+                    '<p class="sv-bundle-card-label">Tags</p>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+                st.text_area(
+                    "Tags",
+                    value=", ".join(bundle.get("tags", [])),
+                    height=90,
+                    label_visibility="collapsed",
+                    key="bundle_tags_edit",
+                )
+            with col2:
+                st.markdown(
+                    '<div class="sv-bundle-card" style="margin-bottom:8px">'
+                    '<p class="sv-bundle-card-label">Hashtags</p>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+                st.text_area(
+                    "Hashtags",
+                    value=" ".join(bundle.get("hashtags", [])),
+                    height=90,
+                    label_visibility="collapsed",
+                    key="bundle_hash_edit",
+                )
+ 
+            # ── Thumbnail prompt ──────────────────────────────────────────────
+            st.markdown(
+                '<div class="sv-thumbnail-card">'
+                '<p class="sv-bundle-card-label">🎨 AI Thumbnail Prompt</p>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "Paste into Midjourney, DALL-E, Canva, or any image generator."
+            )
+            st.text_area(
+                "Thumbnail Prompt",
                 value=bundle.get("thumbnail_prompt", ""),
                 height=120,
+                label_visibility="collapsed",
+                key="bundle_thumb_edit",
+            )
+ 
+            _complete_banner(
+                "Content bundle ready!",
+                "Head to 5. Video Assembly",
             )
 
 # ─────────────────────────────────────────────────────────────────────────────

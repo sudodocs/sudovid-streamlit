@@ -337,19 +337,23 @@ div[data-baseweb="notification"][kind="info"] {
 }
 
 /* ── SPINNER / PROGRESS ──────────────────────────────────────────────────── */
-/* Fill bar — bright blue, smooth transition */
+/* Fill bar — bright blue */
 [data-testid="stProgress"] > div > div {
     background-color: var(--sv-blue) !important;
     border-radius: 99px !important;
     transition: width 0.4s ease !important;
 }
-/* Track — transparent background, dark-blue outline so fill is always visible */
+/* Track — light grey so the blue fill is always visible */
 [data-testid="stProgress"] > div {
     background-color: transparent !important;
-    border: 2px solid var(--sv-blue-dark) !important;
     border-radius: 99px !important;
-    height: 8px !important;          /* slightly taller so the border reads clearly */
-    box-sizing: border-box !important;
+    height: 6px !important;
+}
+/* Dark mode track — slightly lighter than the dark bg so fill reads clearly */
+@media (prefers-color-scheme: dark) {
+    [data-testid="stProgress"] > div {
+        background-color: transparent !important;
+    }
 }
 
 /* ── SIDEBAR ─────────────────────────────────────────────────────────────── */
@@ -3327,54 +3331,19 @@ def _step_states() -> list[dict]:
  
  
 def _render_hero():
-    """Render the branded hero header with inline step progress tracker."""
-    steps = _step_states()
- 
-    # Build step dots HTML
-    dots_html = ""
-    for i, s in enumerate(steps):
-        step_label = s["label"]
-        if s["done"]:
-            circle = (
-                '<span class="sv-step-circle sv-step-done" '
-                f'title="{step_label} — complete">✓</span>'
-            )
-        elif s.get("active"):
-            circle = (
-                '<span class="sv-step-circle sv-step-active" '
-                f'title="{step_label} — current">{i + 1}</span>'
-            )
-        else:
-            circle = (
-                '<span class="sv-step-circle sv-step-locked" '
-                f'title="{step_label} — locked">·</span>'
-            )
- 
-        short = s["short"]
-        connector = '<span class="sv-step-connector"></span>' if i < 5 else ""
-        dots_html += (
-            '<div class="sv-step-dot">'
-            + circle
-            + f'<span class="sv-step-label">{short}</span>'
-            + "</div>"
-            + connector
-        )
- 
-    hero_html = (
+    """Render the branded hero header — branding only."""
+    st.markdown(
         '<div class="sv-hero">'
         '<div class="sv-hero-left">'
         '<div class="sv-hero-icon">🎬</div>'
         '<div class="sv-hero-text">'
         '<span class="sv-hero-title">SudoVid</span>'
         '<span class="sv-hero-sub">AI-powered script, voice &amp; video engine</span>'
-        "</div>"
-        "</div>"
-        '<div class="sv-step-track">'
-        + dots_html
-        + "</div>"
-        "</div>"
+        '</div>'
+        '</div>'
+        '</div>',
+        unsafe_allow_html=True,
     )
-    st.markdown(hero_html, unsafe_allow_html=True)
  
  
 _render_hero()

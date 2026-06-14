@@ -30,60 +30,548 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CSS
+# CSS  — Phase 1: Foundation overhaul
+# Replace the existing st.markdown("""<style>…</style>""") block with this.
+# Zero logic changes — purely cosmetic layer.
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
-    <style>
-    :root {
-        --primary: #2563eb;
-        --bg-main: #f8fafc;
-        --bg-card: #ffffff;
-        --border: #e2e8f0;
-        --text-main: #1e293b;
-        --text-secondary: #64748b;
-    }
-    .stApp { background-color: var(--bg-main); color: var(--text-main); }
-    p, span, label, .stMarkdown, h1, h2, h3, .stMetric label {
-        color: var(--text-main) !important;
-    }
-    .stCaption { color: var(--text-secondary) !important; }
-    .stTextInput input, .stTextArea textarea, [data-baseweb="select"], .stSelectbox div {
-        background-color: white !important;
-        border: 1px solid var(--border) !important;
-        color: var(--text-main) !important;
-    }
-    .stButton>button {
-        background-color: var(--primary); color: white; border-radius: 8px;
-        height: 3.5em; font-weight: 600; width: 100%; border: none;
-        transition: all 0.2s ease-in-out;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-    }
-    .stButton>button:hover { background-color: #1d4ed8; transform: translateY(-1px); }
-    .stTabs [data-baseweb="tab-list"] { gap: 24px; border-bottom: 1px solid var(--border); }
-    .stTabs [data-baseweb="tab"] {
-        height: 50px; background-color: transparent;
-        color: var(--text-secondary); font-weight: 600;
-        border-bottom: 2px solid transparent;
-    }
-    .stTabs [aria-selected="true"] {
-        color: var(--primary) !important;
-        border-bottom-color: var(--primary) !important;
-    }
-    .metric-badge {
-        background-color: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe;
-        padding: 4px 12px; border-radius: 6px; font-weight: bold; font-size: 0.9em;
-    }
-    .report-card {
-        background-color: white; padding: 24px; border-radius: 12px;
-        border: 1px solid var(--border); margin-bottom: 20px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-    }
-    .media-card {
-        background-color: #f0f9ff; padding: 12px; border-radius: 8px;
-        border: 1px solid #bae6fd; margin-bottom: 8px; font-size: 0.85em;
-    }
-    [data-testid="stMetricValue"] { color: var(--primary) !important; }
-    </style>
+<style>
+/* ── DESIGN TOKENS ──────────────────────────────────────────────────────── */
+:root {
+    /* Brand palette */
+    --sv-blue:        #2563eb;
+    --sv-blue-dark:   #1d4ed8;
+    --sv-blue-dim:    #eff6ff;
+    --sv-blue-border: #bfdbfe;
+
+    /* Neutrals */
+    --sv-bg:          #f8fafc;
+    --sv-surface:     #ffffff;
+    --sv-surface-2:   #f1f5f9;
+    --sv-border:      #e2e8f0;
+    --sv-border-med:  #cbd5e1;
+
+    /* Text */
+    --sv-text:        #0f172a;
+    --sv-text-2:      #475569;
+    --sv-text-3:      #94a3b8;
+
+    /* Status */
+    --sv-green:       #16a34a;
+    --sv-green-dim:   #f0fdf4;
+    --sv-green-bdr:   #bbf7d0;
+    --sv-amber:       #d97706;
+    --sv-amber-dim:   #fffbeb;
+    --sv-amber-bdr:   #fde68a;
+    --sv-red:         #dc2626;
+    --sv-red-dim:     #fef2f2;
+    --sv-red-bdr:     #fecaca;
+
+    /* Spacing */
+    --sv-radius-sm:   6px;
+    --sv-radius:      10px;
+    --sv-radius-lg:   14px;
+}
+
+/* ── APP SHELL ──────────────────────────────────────────────────────────── */
+.stApp {
+    background-color: var(--sv-bg) !important;
+    color: var(--sv-text) !important;
+}
+
+/* ── TYPOGRAPHY ─────────────────────────────────────────────────────────── */
+p, span, label, div,
+.stMarkdown, .stMarkdown p,
+h1, h2, h3, h4,
+.stMetric label {
+    color: var(--sv-text) !important;
+}
+.stCaption, .stCaption p {
+    color: var(--sv-text-2) !important;
+    font-size: 0.82rem !important;
+}
+
+/* ── FORM INPUTS ─────────────────────────────────────────────────────────── */
+.stTextInput input,
+.stTextArea textarea {
+    background-color: var(--sv-surface) !important;
+    border: 1px solid var(--sv-border) !important;
+    border-radius: var(--sv-radius-sm) !important;
+    color: var(--sv-text) !important;
+    font-size: 0.92rem !important;
+    transition: border-color 0.15s ease;
+}
+.stTextInput input:focus,
+.stTextArea textarea:focus {
+    border-color: var(--sv-blue) !important;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08) !important;
+    outline: none !important;
+}
+.stTextInput input::placeholder,
+.stTextArea textarea::placeholder {
+    color: var(--sv-text-3) !important;
+}
+
+/* Select / Multiselect */
+[data-baseweb="select"],
+.stSelectbox div[data-baseweb="select"] > div {
+    background-color: var(--sv-surface) !important;
+    border: 1px solid var(--sv-border) !important;
+    border-radius: var(--sv-radius-sm) !important;
+    color: var(--sv-text) !important;
+}
+[data-baseweb="select"]:focus-within {
+    border-color: var(--sv-blue) !important;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08) !important;
+}
+
+/* Select dropdown menu */
+[data-baseweb="popover"] [role="listbox"],
+[data-baseweb="menu"] {
+    background-color: var(--sv-surface) !important;
+    border: 1px solid var(--sv-border) !important;
+    border-radius: var(--sv-radius) !important;
+    box-shadow: 0 8px 24px -4px rgba(15, 23, 42, 0.12) !important;
+}
+[data-baseweb="menu"] li:hover {
+    background-color: var(--sv-blue-dim) !important;
+    color: var(--sv-blue) !important;
+}
+
+/* Sliders */
+[data-testid="stSlider"] [data-baseweb="slider"] [role="slider"] {
+    background-color: var(--sv-blue) !important;
+    border-color: var(--sv-blue) !important;
+}
+[data-testid="stSlider"] [data-baseweb="slider"] [data-testid="stTickBar"],
+[data-testid="stSlider"] [data-baseweb="slider"] > div > div:first-child {
+    background-color: var(--sv-border) !important;
+}
+[data-testid="stSlider"] [data-baseweb="slider"] > div > div:nth-child(2) {
+    background-color: var(--sv-blue) !important;
+}
+
+/* File uploader */
+[data-testid="stFileUploader"] {
+    border: 1.5px dashed var(--sv-border-med) !important;
+    border-radius: var(--sv-radius) !important;
+    background-color: var(--sv-surface) !important;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+[data-testid="stFileUploader"]:hover {
+    border-color: var(--sv-blue) !important;
+    background-color: var(--sv-blue-dim) !important;
+}
+
+/* Radio */
+[data-testid="stRadio"] label {
+    cursor: pointer !important;
+}
+[data-testid="stRadio"] [data-testid="stMarkdownContainer"] p {
+    font-size: 0.88rem !important;
+}
+
+/* Checkbox */
+[data-baseweb="checkbox"] [data-testid="stCheckbox"] span {
+    border-radius: 4px !important;
+}
+
+/* ── BUTTONS ─────────────────────────────────────────────────────────────── */
+
+/* Primary (default) */
+.stButton > button {
+    background-color: var(--sv-blue) !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: var(--sv-radius-sm) !important;
+    font-weight: 600 !important;
+    font-size: 0.88rem !important;
+    height: 2.75rem !important;
+    padding: 0 1.25rem !important;
+    width: 100% !important;
+    letter-spacing: 0.01em !important;
+    transition: background-color 0.15s ease, transform 0.1s ease,
+                box-shadow 0.15s ease !important;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06),
+                0 1px 0 rgba(255,255,255,0.08) inset !important;
+}
+.stButton > button:hover {
+    background-color: var(--sv-blue-dark) !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25) !important;
+}
+.stButton > button:active {
+    transform: translateY(0) !important;
+    box-shadow: none !important;
+}
+
+/* Download buttons */
+.stDownloadButton > button {
+    background-color: var(--sv-green) !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: var(--sv-radius-sm) !important;
+    font-weight: 600 !important;
+    font-size: 0.88rem !important;
+    height: 2.75rem !important;
+    padding: 0 1.25rem !important;
+    width: 100% !important;
+    transition: background-color 0.15s ease, transform 0.1s ease !important;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06) !important;
+}
+.stDownloadButton > button:hover {
+    background-color: #15803d !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 12px rgba(22, 163, 74, 0.25) !important;
+}
+
+/* ── TABS ────────────────────────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0 !important;
+    border-bottom: 1px solid var(--sv-border) !important;
+    background-color: transparent !important;
+    padding: 0 !important;
+}
+.stTabs [data-baseweb="tab"] {
+    height: 44px !important;
+    background-color: transparent !important;
+    color: var(--sv-text-2) !important;
+    font-weight: 500 !important;
+    font-size: 0.85rem !important;
+    padding: 0 16px !important;
+    border-bottom: 2px solid transparent !important;
+    border-radius: 0 !important;
+    transition: color 0.15s ease, border-color 0.15s ease !important;
+    white-space: nowrap !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    color: var(--sv-blue) !important;
+    background-color: var(--sv-blue-dim) !important;
+}
+.stTabs [aria-selected="true"] {
+    color: var(--sv-blue) !important;
+    border-bottom-color: var(--sv-blue) !important;
+    font-weight: 600 !important;
+}
+/* Hide the default tab focus ring — we have our own hover */
+.stTabs [data-baseweb="tab"]:focus {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+/* ── METRICS ─────────────────────────────────────────────────────────────── */
+[data-testid="stMetricValue"] {
+    color: var(--sv-blue) !important;
+    font-size: 1.6rem !important;
+    font-weight: 700 !important;
+}
+[data-testid="stMetricLabel"] {
+    color: var(--sv-text-2) !important;
+    font-size: 0.8rem !important;
+}
+[data-testid="stMetric"] {
+    background-color: var(--sv-surface) !important;
+    border: 1px solid var(--sv-border) !important;
+    border-radius: var(--sv-radius) !important;
+    padding: 16px 20px !important;
+}
+
+/* ── ALERTS / STATUS BANNERS ────────────────────────────────────────────── */
+/* Success */
+[data-testid="stAlert"][kind="success"],
+.stAlert.success,
+div[data-baseweb="notification"][kind="positive"] {
+    background-color: var(--sv-green-dim) !important;
+    border: 1px solid var(--sv-green-bdr) !important;
+    border-radius: var(--sv-radius) !important;
+    color: #14532d !important;
+}
+/* Warning */
+[data-testid="stAlert"][kind="warning"],
+.stAlert.warning,
+div[data-baseweb="notification"][kind="warning"] {
+    background-color: var(--sv-amber-dim) !important;
+    border: 1px solid var(--sv-amber-bdr) !important;
+    border-radius: var(--sv-radius) !important;
+    color: #78350f !important;
+}
+/* Error */
+[data-testid="stAlert"][kind="error"],
+.stAlert.error,
+div[data-baseweb="notification"][kind="negative"] {
+    background-color: var(--sv-red-dim) !important;
+    border: 1px solid var(--sv-red-bdr) !important;
+    border-radius: var(--sv-radius) !important;
+    color: #7f1d1d !important;
+}
+/* Info */
+[data-testid="stAlert"][kind="info"],
+.stAlert.info,
+div[data-baseweb="notification"][kind="info"] {
+    background-color: var(--sv-blue-dim) !important;
+    border: 1px solid var(--sv-blue-border) !important;
+    border-radius: var(--sv-radius) !important;
+    color: #1e3a8a !important;
+}
+
+/* ── EXPANDERS ───────────────────────────────────────────────────────────── */
+[data-testid="stExpander"] {
+    border: 1px solid var(--sv-border) !important;
+    border-radius: var(--sv-radius) !important;
+    background-color: var(--sv-surface) !important;
+    box-shadow: none !important;
+}
+[data-testid="stExpander"] summary {
+    font-weight: 500 !important;
+    font-size: 0.9rem !important;
+    color: var(--sv-text) !important;
+    padding: 12px 16px !important;
+    border-radius: var(--sv-radius) !important;
+}
+[data-testid="stExpander"] summary:hover {
+    background-color: var(--sv-surface-2) !important;
+}
+[data-testid="stExpander"][open] summary {
+    border-bottom: 1px solid var(--sv-border) !important;
+    border-radius: var(--sv-radius) var(--sv-radius) 0 0 !important;
+}
+
+/* ── SPINNER / PROGRESS ──────────────────────────────────────────────────── */
+[data-testid="stProgress"] > div > div {
+    background-color: var(--sv-blue) !important;
+    border-radius: 99px !important;
+    transition: width 0.4s ease !important;
+}
+[data-testid="stProgress"] > div {
+    background-color: var(--sv-border) !important;
+    border-radius: 99px !important;
+    height: 6px !important;
+}
+
+/* ── SIDEBAR ─────────────────────────────────────────────────────────────── */
+[data-testid="stSidebar"] {
+    background-color: var(--sv-surface) !important;
+    border-right: 1px solid var(--sv-border) !important;
+}
+[data-testid="stSidebar"] .stButton > button {
+    background-color: transparent !important;
+    color: var(--sv-red) !important;
+    border: 1px solid var(--sv-red-bdr) !important;
+    font-weight: 500 !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background-color: var(--sv-red-dim) !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+[data-testid="stSidebar"] hr {
+    border-color: var(--sv-border) !important;
+    margin: 12px 0 !important;
+}
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] .stMarkdown h3 {
+    font-size: 0.8rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    color: var(--sv-text-3) !important;
+}
+
+/* ── DIVIDER ─────────────────────────────────────────────────────────────── */
+[data-testid="stHorizontalBlock"] hr,
+.stDivider {
+    border-color: var(--sv-border) !important;
+    margin: 20px 0 !important;
+}
+
+/* ── CODE BLOCKS ─────────────────────────────────────────────────────────── */
+.stCode, code, pre {
+    background-color: var(--sv-surface-2) !important;
+    border: 1px solid var(--sv-border) !important;
+    border-radius: var(--sv-radius-sm) !important;
+    font-size: 0.82rem !important;
+}
+
+/* ── AUDIO PLAYER ────────────────────────────────────────────────────────── */
+audio {
+    width: 100% !important;
+    border-radius: var(--sv-radius-sm) !important;
+    accent-color: var(--sv-blue) !important;
+}
+
+/* ── CUSTOM HTML COMPONENT CLASSES ──────────────────────────────────────── */
+
+/* General-purpose card */
+.sv-card {
+    background-color: var(--sv-surface);
+    border: 1px solid var(--sv-border);
+    border-radius: var(--sv-radius-lg);
+    padding: 20px 22px;
+    margin-bottom: 16px;
+}
+
+/* Card with blue left-accent — for active/info sections */
+.sv-card-accent {
+    background-color: var(--sv-surface);
+    border: 1px solid var(--sv-border);
+    border-left: 3px solid var(--sv-blue);
+    border-radius: 0 var(--sv-radius-lg) var(--sv-radius-lg) 0;
+    padding: 16px 20px;
+    margin-bottom: 14px;
+}
+
+/* Success card */
+.sv-card-success {
+    background-color: var(--sv-green-dim);
+    border: 1px solid var(--sv-green-bdr);
+    border-radius: var(--sv-radius);
+    padding: 14px 18px;
+    margin-bottom: 14px;
+    color: #14532d;
+}
+
+/* Warning card */
+.sv-card-warn {
+    background-color: var(--sv-amber-dim);
+    border: 1px solid var(--sv-amber-bdr);
+    border-radius: var(--sv-radius);
+    padding: 14px 18px;
+    margin-bottom: 14px;
+    color: #78350f;
+}
+
+/* Tuning matrix container (wraps sliders) */
+.sv-matrix {
+    background-color: var(--sv-surface);
+    border: 1px solid var(--sv-border);
+    border-radius: var(--sv-radius-lg);
+    padding: 20px 22px;
+    margin-bottom: 20px;
+}
+
+/* Media item card (used in Tab 2 analysis results) */
+.sv-media-card {
+    background-color: #f0f9ff;
+    border: 1px solid #bae6fd;
+    border-radius: var(--sv-radius);
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--sv-text);
+}
+
+/* Pill / badge */
+.sv-badge {
+    display: inline-block;
+    background-color: var(--sv-blue-dim);
+    color: var(--sv-blue);
+    border: 1px solid var(--sv-blue-border);
+    padding: 2px 10px;
+    border-radius: 99px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+.sv-badge-green {
+    background-color: var(--sv-green-dim);
+    color: var(--sv-green);
+    border-color: var(--sv-green-bdr);
+}
+.sv-badge-amber {
+    background-color: var(--sv-amber-dim);
+    color: var(--sv-amber);
+    border-color: var(--sv-amber-bdr);
+}
+.sv-badge-gray {
+    background-color: var(--sv-surface-2);
+    color: var(--sv-text-2);
+    border-color: var(--sv-border);
+}
+
+/* Section header row (icon + title + optional badge inline) */
+.sv-section-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+.sv-section-head h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--sv-text) !important;
+}
+
+/* Stat / metric row */
+.sv-stat-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.sv-stat {
+    flex: 1;
+    background-color: var(--sv-surface-2);
+    border-radius: var(--sv-radius);
+    padding: 12px 14px;
+    text-align: center;
+}
+.sv-stat-val {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--sv-blue);
+    display: block;
+}
+.sv-stat-lbl {
+    font-size: 0.75rem;
+    color: var(--sv-text-2);
+    display: block;
+    margin-top: 2px;
+}
+
+/* Footer */
+.sv-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 0 6px;
+    border-top: 1px solid var(--sv-border);
+    margin-top: 10px;
+    font-size: 0.78rem;
+    color: var(--sv-text-3);
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+/* ── LEGACY ALIASES (keep existing class names working) ─────────────────── */
+/* Any existing .report-card and .media-card usages keep working */
+.report-card {
+    background-color: var(--sv-surface);
+    padding: 20px 22px;
+    border-radius: var(--sv-radius-lg);
+    border: 1px solid var(--sv-border);
+    margin-bottom: 20px;
+}
+.media-card {
+    background-color: #f0f9ff;
+    padding: 12px 14px;
+    border-radius: var(--sv-radius);
+    border: 1px solid #bae6fd;
+    margin-bottom: 8px;
+    font-size: 0.85em;
+}
+.metric-badge {
+    background-color: var(--sv-blue-dim);
+    color: #1e40af;
+    border: 1px solid var(--sv-blue-border);
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.85em;
+}
+</style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────

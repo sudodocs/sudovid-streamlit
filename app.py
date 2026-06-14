@@ -80,7 +80,7 @@ st.markdown("""
 }
 
 /* ── TYPOGRAPHY ─────────────────────────────────────────────────────────── */
-p, span, label, div,
+p, span,
 .stMarkdown, .stMarkdown p,
 h1, h2, h3, h4,
 .stMetric label {
@@ -1167,19 +1167,18 @@ audio {
     color: inherit !important;
 }
 
-/* ── NATIVE RADIO CARDS (Equal Sizes Fix) ──────────────────────────────── */
-/* Uses flexbox with stretch alignment to force perfectly equal heights and widths */
+/* ── NATIVE RADIO CARDS (Perfect Grid & Equal Heights Fix) ─────────────── */
 [data-testid="stRadio"] > div[role="radiogroup"][aria-orientation="horizontal"] {
     display: flex !important;
     flex-direction: row !important;
     flex-wrap: wrap !important;
-    align-items: stretch !important; /* THIS FORCES EQUAL HEIGHTS */
+    align-items: stretch !important; /* Stretches outer container */
     gap: 12px !important;
 }
 
 [data-testid="stRadio"] > div[role="radiogroup"] > label {
-    flex: 1 1 0% !important; /* THIS FORCES EQUAL WIDTHS */
-    min-width: 140px !important; /* Prevents squishing on small screens */
+    flex: 1 1 0% !important; /* Equal widths */
+    min-width: 140px !important;
     background-color: var(--sv-surface) !important;
     border: 1px solid var(--sv-border) !important;
     border-radius: var(--sv-radius) !important;
@@ -1187,7 +1186,15 @@ audio {
     margin: 0 !important;
     transition: all 0.2s ease !important;
     cursor: pointer !important;
-    align-items: flex-start !important; /* Keeps the radio circle at the top */
+    /* Make the label itself a flex column */
+    display: flex !important;
+    flex-direction: column !important;
+}
+
+/* Crucial: Force Streamlit's inner div to fill the stretched height */
+[data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child {
+    height: 100% !important;
+    align-items: flex-start !important;
 }
 
 [data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
@@ -1195,42 +1202,32 @@ audio {
     background-color: var(--sv-blue-dim) !important;
 }
 
-/* Selected state styling */
 [data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
     border: 2px solid var(--sv-blue) !important;
     background-color: var(--sv-blue-dim) !important;
 }
 
-/* Ensure text contrast is correct inside the card */
 [data-testid="stRadio"] > div[role="radiogroup"] > label * {
     color: var(--sv-text) !important;
 }
 
-/* Style the caption text */
 [data-testid="stRadio"] > div[role="radiogroup"] > label > div > div:last-child p {
     font-size: 0.78rem !important;
     color: var(--sv-text-2) !important;
     margin-top: 2px !important;
 }
-            
+
 /* ── FIX SLIDER TEXT CONTRAST (Tuning Matrix) ──────────────────────────── */
-/* 1. Mutes the inactive slider labels so they don't clash */
 [data-testid="stSlider"] [data-testid="stTickBar"] div {
     color: var(--sv-text-2) !important;
 }
 
-/* 2. Forces the blue background on the active label container */
-[data-testid="stSlider"] [data-testid="stTickBar"] div[style*="font-weight"] {
+/* Streamlit injects an inline 'color' style for the active tick. Target that! */
+[data-testid="stSlider"] [data-testid="stTickBar"] div[style*="color"] {
+    color: #ffffff !important;
     background-color: var(--sv-blue) !important;
     padding: 2px 8px !important;
     border-radius: 4px !important;
-}
-
-/* 3. Explicitly targets ALL nested elements inside the active label to force white text */
-[data-testid="stSlider"] [data-testid="stTickBar"] div[style*="font-weight"],
-[data-testid="stSlider"] [data-testid="stTickBar"] div[style*="font-weight"] div,
-[data-testid="stSlider"] [data-testid="stTickBar"] div[style*="font-weight"] span {
-    color: #ffffff !important;
 }
 
 /* ── PROGRESS BAR TEXT FIX (Issue 5) ───────────────────────────────────── */

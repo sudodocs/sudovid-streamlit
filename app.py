@@ -1158,21 +1158,50 @@ audio {
 .sv-preflight-label { color: var(--sv-text) !important; flex: 1; }
 .sv-preflight-detail { color: var(--sv-text-2) !important; font-size: 0.74rem; }
 
-/* ── CARD SELECTION BUTTONS (Issue 3) ──────────────────────────────────── */
-.sv-sel > div[data-testid="stButton"] > button {
-    background-color: var(--sv-blue-dim) !important;
-    border: 2px solid var(--sv-blue) !important;
-    color: var(--sv-blue) !important;
-    font-weight: 700 !important;
+/* ── FIX BLACK TEXT ON BLUE BUTTONS & PROGRESS BAR ─────────────────────── */
+/* Forces all text inside buttons to inherit the white text color */
+.stButton > button * {
+    color: inherit !important;
 }
-.sv-unsel > div[data-testid="stButton"] > button {
+[data-testid="stProgress"] * {
+    color: inherit !important;
+}
+
+/* ── NATIVE RADIO CARDS (Replaces broken button grids) ─────────────────── */
+/* Transforms native st.radio into a responsive grid of clickable cards */
+[data-testid="stRadio"] > div[role="radiogroup"] {
+    display: grid !important;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)) !important;
+    gap: 12px !important;
+}
+[data-testid="stRadio"] > div[role="radiogroup"] > label {
     background-color: var(--sv-surface) !important;
     border: 1px solid var(--sv-border) !important;
-    color: var(--sv-text) !important;
+    border-radius: var(--sv-radius) !important;
+    padding: 14px 16px !important;
+    margin: 0 !important;
+    transition: all 0.2s ease !important;
+    cursor: pointer !important;
+    align-items: flex-start !important;
 }
-.sv-unsel > div[data-testid="stButton"] > button:hover {
+[data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
     border-color: var(--sv-blue) !important;
     background-color: var(--sv-blue-dim) !important;
+}
+/* Selected state styling */
+[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
+    border: 2px solid var(--sv-blue) !important;
+    background-color: var(--sv-blue-dim) !important;
+}
+/* Ensure text contrast is correct inside the card */
+[data-testid="stRadio"] > div[role="radiogroup"] > label * {
+    color: var(--sv-text) !important;
+}
+/* Style the caption text */
+[data-testid="stRadio"] > div[role="radiogroup"] > label > div > div:last-child p {
+    font-size: 0.78rem !important;
+    color: var(--sv-text-2) !important;
+    margin-top: 2px !important;
 }
 
 /* ── PROGRESS BAR TEXT FIX (Issue 5) ───────────────────────────────────── */
@@ -3479,51 +3508,51 @@ with tab1:
     topic = st.text_input("Topic or Title", placeholder="e.g. Project Hail Mary · CrowdStrike Outage")
     st.divider()
  
+    # ── Content Mode ─────────────────────────────────────────────────────────
     st.markdown("**Content Mode**")
     st.caption("Selects the research persona and visual strategy.")
     
-    mode_options = [MODE_FILM, MODE_TECH, MODE_EDU]
-    mode_icons   = ["🎬", "🔍", "📚"]
-    mode_hints   = ["Reviews, analysis", "Incidents, deep dives", "Tutorials, explainers"]
- 
-    if "mode_param" not in st.session_state:
-        st.session_state["mode_param"] = MODE_FILM
-
-    _mode_cols = st.columns(3)
-    for _col, _opt, _icon, _hint in zip(_mode_cols, mode_options, mode_icons, mode_hints):
-        with _col:
-            _is_sel = st.session_state["mode_param"] == _opt
-            _cls = "sv-sel" if _is_sel else "sv-unsel"
-            st.markdown(f'<div class="{_cls}">', unsafe_allow_html=True)
-            if st.button(f"{_icon}\n**{_opt}**\n{_hint}", key=f"btn_{_opt}", use_container_width=True):
-                st.session_state["mode_param"] = _opt
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    active_mode = st.session_state["mode_param"]
+    mode_map = {
+        "🎬 **Film & Series Analysis**": MODE_FILM,
+        "🔍 **Tech News & Investigative**": MODE_TECH,
+        "📚 **Educational Technology**": MODE_EDU
+    }
+    
+    # Render native radio (CSS will transform this into the 3-column card grid)
+    selected_mode_lbl = st.radio(
+        "Content Mode",
+        options=list(mode_map.keys()),
+        captions=["Reviews, analysis", "Incidents, deep dives", "Tutorials, explainers"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    
+    # Save the actual constant to state
+    active_mode = mode_map[selected_mode_lbl]
+    st.session_state["mode_param"] = active_mode
+    
     st.divider()
  
+    # ── Target Video Length ──────────────────────────────────────────────────
     st.markdown("**Target Video Length**")
     st.caption("Controls script length and output canvas format.")
     
-    length_options = ["YouTube Short (< 1 minute)", "Mid-length (3-8 mins)", "Deep Dive (10+ mins)"]
-    length_badges = ["9:16 · <1 min", "16:9 · 3–8 min", "16:9 · 10+ min"]
- 
-    if "length_param" not in st.session_state:
-        st.session_state["length_param"] = length_options[0]
-
-    _len_cols = st.columns(3)
-    for _col, _opt, _badge in zip(_len_cols, length_options, length_badges):
-        with _col:
-            _is_sel = st.session_state["length_param"] == _opt
-            _cls = "sv-sel" if _is_sel else "sv-unsel"
-            st.markdown(f'<div class="{_cls}">', unsafe_allow_html=True)
-            if st.button(f"**{_opt}**\n{_badge}", key=f"btn_len_{_opt}", use_container_width=True):
-                st.session_state["length_param"] = _opt
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    video_length = st.session_state["length_param"]
+    len_map = {
+        "📱 **YouTube Short**": "YouTube Short (< 1 minute)",
+        "🖥️ **Mid-length**": "Mid-length (3-8 mins)",
+        "🖥️ **Deep Dive**": "Deep Dive (10+ mins)"
+    }
+    
+    selected_len_lbl = st.radio(
+        "Target Video Length",
+        options=list(len_map.keys()),
+        captions=["< 1 minute · 9:16", "3-8 mins · 16:9", "10+ mins · 16:9"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    
+    video_length = len_map[selected_len_lbl]
+    st.session_state["length_param"] = video_length
  
     source_type = "Original"
     if active_mode == MODE_FILM:
@@ -3692,25 +3721,34 @@ with tab3:
  
     st.markdown("**Select Narrator (US English)**")
     
-    if "voice_id" not in st.session_state:
-        st.session_state["voice_id"] = VOICES[0][0]
+    # Build options and captions dynamically from your VOICES list
+    voice_options = []
+    voice_captions = []
+    voice_map = {}
+    
+    for v_id, v_name, v_style, v_gender in VOICES:
+        emoji = "👨" if v_gender == "M" else "👩"
+        lbl = f"{emoji} **{v_name}**"
+        cap = f"{v_style} ({v_gender})"
+        
+        voice_options.append(lbl)
+        voice_captions.append(cap)
+        voice_map[lbl] = v_id  # Map visual label back to Edge TTS ID
 
-    _voice_rows = [VOICES[i:i+2] for i in range(0, len(VOICES), 2)]
-    for _vrow in _voice_rows:
-        _vcols = st.columns(2)
-        for _vcol, (_v_id, _v_name, _v_style, _v_gender) in zip(_vcols, _vrow):
-            with _vcol:
-                _is_sel = st.session_state["voice_id"] == _v_id
-                _emoji  = "👨" if _v_gender == "M" else "👩"
-                _label  = f"{_emoji} **{_v_name}** — {_v_style}  `{_v_gender}`"
-                _cls = "sv-sel" if _is_sel else "sv-unsel"
-                st.markdown(f'<div class="{_cls}">', unsafe_allow_html=True)
-                if st.button(_label, key=f"voice_btn_{_v_id}", use_container_width=True):
-                    st.session_state["voice_id"] = _v_id
-                    st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
-
-    selected_voice = next((v for v in VOICES if v[0] == st.session_state["voice_id"]), VOICES[0])
+    # Render native radio grid
+    selected_voice_lbl = st.radio(
+        "Select Narrator",
+        options=voice_options,
+        captions=voice_captions,
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    
+    # Save the selected ID to state
+    st.session_state["voice_id"] = voice_map[selected_voice_lbl]
+    
+    # Get details for the synthesis preview
+    selected_voice = next(v for v in VOICES if v[0] == st.session_state["voice_id"])
     voice_option = (selected_voice[0], f"{selected_voice[1]} ({selected_voice[3]})")
     st.divider()
  

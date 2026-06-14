@@ -1889,16 +1889,15 @@ with st.sidebar:
     st.caption(f"Model: `{GEMINI_MODEL}`")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TABS  (7 tabs — renumbered)
+# TABS  (6 tabs — Research & Script merged; YouTube Bundle moved last as optional)
 # ─────────────────────────────────────────────────────────────────────────────
-(tab1, tab2, tab3, tab4, tab5, tab6, tab7) = st.tabs([
+(tab1, tab2, tab3, tab4, tab5, tab6) = st.tabs([
     "1. Parameters",
     "2. Media Upload",
-    "3. Ground Research",
-    "4. Generated Script",
-    "5. Voiceover",
-    "6. Content Bundle",
-    "7. Video Assembly",
+    "3. Research & Script",
+    "4. Voiceover",
+    "5. Video Assembly",
+    "6. YouTube Bundle ✦ Optional",
 ])
 
 
@@ -2059,26 +2058,44 @@ with tab2:
                 f'</div>',
                 unsafe_allow_html=True,
             )
-        st.success("🎉 **Step 2 Complete!** Click **'3. Ground Research'**.")
+        st.success("🎉 **Step 2 Complete!** Click **'3. Research & Script'** to continue.")
     elif st.session_state.get("uploaded_media") == []:
-        st.success("Skipped — proceeding without user media. Click **'3. Ground Research'**.")
+        st.success("Skipped — proceeding without user media. Click **'3. Research & Script'**.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 3 — GROUND RESEARCH
+# TAB 3 — RESEARCH & SCRIPT  (merged)
+# Two sequential buttons: Research first, then Generate Script.
+# Research runs in the background; the briefing is shown collapsed so it
+# doesn't block the eye path to the Generate Script button below it.
 # ─────────────────────────────────────────────────────────────────────────────
 with tab3:
-    st.subheader("Step 3: Targeted Intelligence Gathering")
+    st.subheader("Step 3: Research & Script")
+
     if "topic_param" not in st.session_state:
         st.info("Complete Step 1 first.")
     else:
-        st.info(f"🌐 Searching the web to support your angle on "
-                f"**{st.session_state['topic_param']}**.")
-        if st.button("🔍 Execute Targeted Background Research"):
+        media_analysis_t3 = st.session_state.get("media_analysis", [])
+        if media_analysis_t3:
+            st.caption(
+                f"💡 {len(media_analysis_t3)} uploaded media file(s) will inform "
+                f"both research targeting and script structure."
+            )
+
+        # ── PHASE 1: RESEARCH ────────────────────────────────────────────────
+        st.markdown("#### Phase 1 — Research")
+        st.caption(
+            "Gemini searches the web for facts, dates, quotes, and data that "
+            "specifically support your angle. Takes 15–30 seconds."
+        )
+
+        if st.button("🔍 Research Topic", key="btn_research"):
             if not api_key:
                 st.warning("Gemini API Key required in sidebar.")
             else:
-                with st.spinner("🌐 Searching…"):
+                with st.spinner(
+                    f"🌐 Researching **{st.session_state['topic_param']}**…"
+                ):
                     st.session_state["research"] = perform_grounded_research(
                         topic       = st.session_state["topic_param"],
                         mode        = st.session_state["mode_param"],
@@ -2087,84 +2104,104 @@ with tab3:
                         length      = st.session_state["length_param"],
                         api_key     = api_key,
                     )
+                # Clear any stale script so Generate Script must be re-run
+                st.session_state.pop("package", None)
+                st.session_state.pop("final_script_text", None)
+
         if "research" in st.session_state:
-            st.success("✅ Research Complete")
-            with st.expander("View Factual Briefing", expanded=False):
+            st.success("✅ Research complete")
+            # Collapsed by default — inspectable but not blocking
+            with st.expander("📄 View Factual Briefing", expanded=False):
                 st.markdown(st.session_state["research"])
-            st.success("🎉 **Step 3 Complete!** Click **'4. Generated Script'**.")
 
+            st.markdown("---")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 4 — GENERATED SCRIPT
-# ─────────────────────────────────────────────────────────────────────────────
-with tab4:
-    st.subheader("Step 4: Script Generation & Editing")
-    if "research" not in st.session_state:
-        st.info("Complete Step 3 first.")
-    else:
-        media_analysis = st.session_state.get("media_analysis", [])
-        if media_analysis:
-            st.info(
-                f"💡 Script will be informed by **{len(media_analysis)} uploaded media file(s)**."
+            # ── PHASE 2: GENERATE SCRIPT ─────────────────────────────────────
+            st.markdown("#### Phase 2 — Generate Script")
+            st.caption(
+                "Gemini synthesises the research and your angle into a full "
+                "conversational script. Edit it freely before moving to voiceover."
             )
 
-        if st.button("🚀 Architect Refined Script"):
-            with st.spinner(f"Synthesising for {st.session_state['length_param']}…"):
-                st.session_state["package"] = generate_script_package(
-                    mode           = st.session_state["mode_param"],
-                    topic          = st.session_state["topic_param"],
-                    research       = st.session_state["research"],
-                    angle          = st.session_state["angle_param"],
-                    matrix         = st.session_state["matrix_param"],
-                    source_type    = st.session_state["source_param"],
-                    length         = st.session_state["length_param"],
-                    api_key        = api_key,
-                    media_analysis = media_analysis,
-                )
+            if st.button("📝 Generate Script", key="btn_generate_script"):
+                with st.spinner(
+                    f"✍️ Writing script for "
+                    f"**{st.session_state.get('length_param', '')}**…"
+                ):
+                    st.session_state["package"] = generate_script_package(
+                        mode           = st.session_state["mode_param"],
+                        topic          = st.session_state["topic_param"],
+                        research       = st.session_state["research"],
+                        angle          = st.session_state["angle_param"],
+                        matrix         = st.session_state["matrix_param"],
+                        source_type    = st.session_state["source_param"],
+                        length         = st.session_state["length_param"],
+                        api_key        = api_key,
+                        media_analysis = media_analysis_t3,
+                    )
 
-        if "package" in st.session_state:
-            p = st.session_state["package"]
-            if "error" in p:
-                st.error(p["error"])
-                with st.expander("Raw Output"):
-                    st.text(p.get("raw"))
-            else:
-                st.success(f"### {p.get('viral_title')}")
-                with st.expander("📊 Script Architecture Details", expanded=False):
-                    st.markdown("#### 🌍 Thematic Resonance")
-                    st.warning(f"**Analogous Event:** {p.get('thematic_resonance',{}).get('real_world_event')}")
-                    st.write(p.get("thematic_resonance", {}).get("explanation"))
-                    if st.session_state["mode_param"] == MODE_FILM:
-                        for char in p.get("character_matrix", []):
-                            st.markdown(
-                                f"**{char['name']}** "
-                                f"<span class='metric-badge'>{char['arc_score']}/10</span>",
-                                unsafe_allow_html=True)
+            if "package" in st.session_state:
+                p = st.session_state["package"]
+                if "error" in p:
+                    st.error(p["error"])
+                    with st.expander("Raw Output"):
+                        st.text(p.get("raw"))
+                else:
+                    st.success(f"### {p.get('viral_title')}")
 
-                st.markdown("### 📝 Conversational Script Editor")
-                st.info("💡 Edit freely. Use commas or --- for natural pauses.")
-                fs = p.get("full_script", {})
-                default_text = "\n\n".join(filter(None, [
-                    p.get("hook_script", ""), fs.get("intro", ""),
-                    fs.get("act1", ""),       fs.get("act2", ""),
-                    fs.get("act3", ""),       fs.get("outro", ""),
-                ]))
-                st.session_state["final_script_text"] = st.text_area(
-                    "Final Polish:", value=default_text.strip(), height=400)
-                st.download_button(
-                    "📥 Download Text Script",
-                    data=st.session_state["final_script_text"],
-                    file_name=f"{p.get('viral_title','script').replace(' ','_').lower()}.txt",
-                    mime="text/plain")
-                st.success("🎉 **Step 4 Complete!** Click **'5. Voiceover'**.")
+                    # Architecture details — collapsed, optional reading
+                    with st.expander("📊 Script Architecture Details", expanded=False):
+                        st.markdown("#### 🌍 Thematic Resonance")
+                        st.warning(
+                            f"**Analogous Event:** "
+                            f"{p.get('thematic_resonance', {}).get('real_world_event')}"
+                        )
+                        st.write(p.get("thematic_resonance", {}).get("explanation"))
+                        if st.session_state["mode_param"] == MODE_FILM:
+                            for char in p.get("character_matrix", []):
+                                st.markdown(
+                                    f"**{char['name']}** "
+                                    f"<span class='metric-badge'>"
+                                    f"{char['arc_score']}/10</span>",
+                                    unsafe_allow_html=True,
+                                )
+
+                    st.markdown("### 📝 Script Editor")
+                    st.info(
+                        "💡 Edit freely below — this is exactly what flows into "
+                        "Voiceover. Use commas or `---` for natural pauses."
+                    )
+                    fs = p.get("full_script", {})
+                    default_text = "\n\n".join(filter(None, [
+                        p.get("hook_script", ""),
+                        fs.get("intro", ""), fs.get("act1", ""),
+                        fs.get("act2", ""), fs.get("act3", ""),
+                        fs.get("outro", ""),
+                    ]))
+                    st.session_state["final_script_text"] = st.text_area(
+                        "Final Polish:",
+                        value=default_text.strip(),
+                        height=400,
+                    )
+                    st.download_button(
+                        "📥 Download Script (.txt)",
+                        data=st.session_state["final_script_text"],
+                        file_name=(
+                            f"{p.get('viral_title','script').replace(' ','_').lower()}.txt"
+                        ),
+                        mime="text/plain",
+                    )
+                    st.success(
+                        "🎉 **Step 3 Complete!** Click **'4. Voiceover'** to continue."
+                    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 5 — VOICEOVER
+# TAB 4 — VOICEOVER
 # ─────────────────────────────────────────────────────────────────────────────
-with tab5:
-    st.subheader("Step 5: AI Voiceover Studio")
-    st.info("Turn your finalized script into professional audio.")
+with tab4:
+    st.subheader("Step 4: AI Voiceover Studio")
+    st.info("Turn your finalised script into professional audio.")
 
     voice_option = st.selectbox("Select Narrator (US English)", [
         ("en-US-ChristopherNeural", "Christopher (Male - Deep/Professional)"),
@@ -2182,13 +2219,13 @@ with tab5:
     ], format_func=lambda x: x[1])
 
     source_mode = st.radio("Choose Text Source for Voiceover:",
-                            ["Use Generated Script (from Tab 4)",
+                            ["Use Generated Script (from Tab 3)",
                              "Upload Custom Text File (.txt)"])
     text_to_synthesize = ""
-    if source_mode == "Use Generated Script (from Tab 4)":
+    if source_mode == "Use Generated Script (from Tab 3)":
         text_to_synthesize = st.session_state.get("final_script_text", "")
         if not text_to_synthesize:
-            st.warning("⚠️ No generated script found. Complete Steps 1-4 first.")
+            st.warning("⚠️ No generated script found. Complete Step 3 first.")
     else:
         uploaded_file = st.file_uploader("Upload .txt for Voiceover",
                                           type=["txt"], key="voice_upload")
@@ -2197,17 +2234,17 @@ with tab5:
             st.success("File uploaded!")
 
     st.markdown("### Preview Text for Audio Generation")
-    st.session_state["tab5_audio_text"] = st.text_area(
+    st.session_state["tab4_audio_text"] = st.text_area(
         "This exact text will be sent to the AI Voice:",
         value=text_to_synthesize, height=250)
 
     if st.button("🔊 Generate Voiceover"):
-        if not st.session_state["tab5_audio_text"].strip():
+        if not st.session_state.get("tab4_audio_text", "").strip():
             st.error("Text box is empty.")
         else:
             with st.spinner(f"Synthesising with {voice_option[1]}…"):
                 audio_path = generate_audio_sync(
-                    st.session_state["tab5_audio_text"], voice_option[0])
+                    st.session_state["tab4_audio_text"], voice_option[0])
                 if audio_path:
                     st.session_state["last_audio_path"] = audio_path
                     st.success("✅ Audio generated!")
@@ -2215,58 +2252,22 @@ with tab5:
                     with open(audio_path, "rb") as f:
                         st.download_button(
                             "📥 Download Audio (.mp3)", data=f,
-                            file_name=f"{st.session_state.get('topic_param','voiceover').replace(' ','_').lower()}_voiceover.mp3",
-                            mime="audio/mp3")
+                            file_name=(
+                                f"{st.session_state.get('topic_param','voiceover').replace(' ','_').lower()}"
+                                f"_voiceover.mp3"
+                            ),
+                            mime="audio/mp3",
+                        )
                 else:
                     st.error("Audio generation failed. Check internet connection.")
-            st.success("🎉 **Step 5 Complete!** Click **'6. Content Bundle'**.")
+            st.success("🎉 **Step 4 Complete!** Click **'5. Video Assembly'** to continue.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 6 — CONTENT BUNDLE
+# TAB 5 — VIDEO ASSEMBLY
 # ─────────────────────────────────────────────────────────────────────────────
-with tab6:
-    st.subheader("Step 6: YouTube Content Bundle")
-    st.info("Generate SEO title, description, tags, hashtags, and thumbnail prompt.")
-
-    bundle_source = st.radio("Script source for bundle:",
-                              ["Use 'Generated Script' (from Tab 4)",
-                               "Use 'Final Audio Text' (from Tab 5)"])
-    if st.button("📦 Generate Content Bundle"):
-        target_text = (st.session_state.get("final_script_text", "")
-                       if bundle_source == "Use 'Generated Script' (from Tab 4)"
-                       else st.session_state.get("tab5_audio_text", ""))
-        if not api_key:
-            st.error("⚠️ Gemini API Key required.")
-        elif not target_text.strip():
-            st.error("⚠️ Target text is empty.")
-        else:
-            with st.spinner("Generating YouTube metadata…"):
-                st.session_state["yt_bundle"] = generate_youtube_bundle(api_key, target_text)
-
-    if "yt_bundle" in st.session_state:
-        bundle = st.session_state["yt_bundle"]
-        if "error" in bundle:
-            st.error(bundle["error"])
-        else:
-            st.success("✅ YouTube Bundle Generated!")
-            st.text_input("**Viral Title**",  value=bundle.get("viral_title",  ""))
-            st.text_area( "**Description**",   value=bundle.get("description",  ""), height=200)
-            c1, c2 = st.columns(2)
-            with c1:
-                st.text_area("**Tags**", value=", ".join(bundle.get("tags", [])), height=100)
-            with c2:
-                st.text_area("**Hashtags**", value=" ".join(bundle.get("hashtags", [])), height=100)
-            st.markdown("### 🎨 AI Thumbnail Prompt")
-            st.text_area("Image Prompt:", value=bundle.get("thumbnail_prompt", ""), height=100)
-            st.success("🎉 **Step 6 Complete!** Click **'7. Video Assembly'**.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 7 — VIDEO ASSEMBLY
-# ─────────────────────────────────────────────────────────────────────────────
-with tab7:
-    st.subheader("Step 7: Video Assembly")
+with tab5:
+    st.subheader("Step 5: Video Assembly")
 
     mode       = st.session_state.get("mode_param", "")
     topic_val  = st.session_state.get("topic_param", "")
@@ -2333,9 +2334,9 @@ with tab7:
 
     missing = []
     if not audio_path_v or not os.path.exists(audio_path_v):
-        missing.append("✗ No audio — complete Step 5 first")
+        missing.append("✗ No audio — complete Step 4 first")
     if not script_text_v:
-        missing.append("✗ No script — complete Step 4 first")
+        missing.append("✗ No script — complete Step 3 first")
     if not topic_val:
         missing.append("✗ No topic — complete Step 1 first")
     if not api_key:
@@ -2469,6 +2470,11 @@ with tab7:
                                 ),
                                 mime="video/mp4",
                             )
+                    st.info(
+                        "💡 Head to **Tab 6 — YouTube Bundle** whenever you're "
+                        "ready to generate your title, description, tags, and "
+                        "thumbnail prompt. It's optional and can be done any time."
+                    )
                     if st.button("🔄 Reset & Assemble Again"):
                         for k in ("shot_list", "assembly_running",
                                   "assembly_output", "trailer_path", "trailer_segs"):
@@ -2482,11 +2488,72 @@ with tab7:
                     time.sleep(3)
                     st.rerun()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 6 — YOUTUBE BUNDLE  (optional post-production step)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab6:
+    st.subheader("Step 6: YouTube Bundle")
+    st.info(
+        "**This step is optional and can be completed at any time** — before or "
+        "after video assembly. Generate your YouTube title, description, tags, "
+        "hashtags, and an AI thumbnail prompt ready to paste into YouTube Studio."
+    )
+
+    # Source selector — references updated tab numbers
+    bundle_source = st.radio(
+        "Base the bundle on:",
+        [
+            "Generated script (Tab 3)",
+            "Final voiceover text (Tab 4)",
+        ],
+    )
+    if st.button("📦 Generate YouTube Bundle"):
+        target_text = (
+            st.session_state.get("final_script_text", "")
+            if bundle_source == "Generated script (Tab 3)"
+            else st.session_state.get("tab4_audio_text", "")
+        )
+        if not api_key:
+            st.error("⚠️ Gemini API Key required.")
+        elif not target_text.strip():
+            st.error(
+                "⚠️ No script text found. "
+                "Complete Step 3 (Research & Script) first."
+            )
+        else:
+            with st.spinner("Generating YouTube metadata…"):
+                st.session_state["yt_bundle"] = generate_youtube_bundle(
+                    api_key, target_text)
+
+    if "yt_bundle" in st.session_state:
+        bundle = st.session_state["yt_bundle"]
+        if "error" in bundle:
+            st.error(bundle["error"])
+        else:
+            st.success("✅ YouTube Bundle Generated!")
+            st.markdown("### 📝 Metadata")
+            st.text_input("Viral Title",  value=bundle.get("viral_title",  ""))
+            st.text_area( "Description",  value=bundle.get("description",  ""), height=200)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.text_area("Tags",     value=", ".join(bundle.get("tags",     [])), height=100)
+            with c2:
+                st.text_area("Hashtags", value=" ".join(bundle.get("hashtags", [])), height=100)
+            st.markdown("---")
+            st.markdown("### 🎨 AI Thumbnail Prompt")
+            st.caption("Paste into Midjourney, DALL-E, or Canva.")
+            st.text_area(
+                "Image Prompt:",
+                value=bundle.get("thumbnail_prompt", ""),
+                height=120,
+            )
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FOOTER
 # ─────────────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
-    f"SudoVid v3.0 | AI-Powered Script, Voice & Video Engine | "
-    f"Model: {GEMINI_MODEL} | User media preferred over all external sources"
+    f"SudoVid v3.1 | AI-Powered Script, Voice & Video Engine | "
+    f"Model: {GEMINI_MODEL} | 6-tab flow — YouTube Bundle optional"
 )

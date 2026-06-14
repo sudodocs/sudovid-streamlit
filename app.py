@@ -1213,16 +1213,18 @@ audio {
 }
             
 /* ── FIX SLIDER TEXT CONTRAST (Tuning Matrix) ──────────────────────────── */
-/* Ensures inactive slider labels inherit the correct theme color */
-[data-testid="stSlider"] div[data-testid="stTickBar"] div {
-    color: var(--sv-text) !important;
+/* 1. Mutes the inactive slider labels so the active one pops */
+[data-testid="stSlider"] [data-testid="stTickBar"] > div,
+[data-testid="stSlider"] [data-testid="stTickBar"] > div * {
+    color: var(--sv-text-2) !important;
 }
 
-/* Targets the active (selected) slider label and forces white text */
-[data-testid="stSlider"] div[data-testid="stTickBar"] div[style*="font-weight"] {
+/* 2. Targets the active (selected) slider label and ALL its children to force white text */
+[data-testid="stSlider"] [data-testid="stTickBar"] > div[style*="font-weight"],
+[data-testid="stSlider"] [data-testid="stTickBar"] > div[style*="font-weight"] * {
     color: #ffffff !important;
     background-color: var(--sv-blue) !important;
-    padding: 2px 6px !important;
+    padding: 1px 4px !important;
     border-radius: 4px !important;
 }
 
@@ -3535,9 +3537,9 @@ with tab1:
     st.caption("Selects the research persona and visual strategy.")
     
     mode_map = {
-        "🎬 **Film & Series Analysis**": MODE_FILM,
-        "🔍 **Tech News & Investigative**": MODE_TECH,
-        "📚 **Educational Technology**": MODE_EDU
+        "🎬 **Film & Series**": MODE_FILM,
+        "🔍 **Tech News**": MODE_TECH,
+        "📚 **Educational**": MODE_EDU
     }
     
     # Render native radio (CSS will transform this into the 3-column card grid)
@@ -3560,7 +3562,7 @@ with tab1:
     st.caption("Controls script length and output canvas format.")
     
     len_map = {
-        "📱 **YouTube Short**": "YouTube Short (< 1 minute)",
+        "📱 **Shorts**": "Short-length (< 1 minute)",
         "🖥️ **Mid-length**": "Mid-length (3-8 mins)",
         "🖥️ **Deep Dive**": "Deep Dive (10+ mins)"
     }

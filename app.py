@@ -1167,18 +1167,19 @@ audio {
     color: inherit !important;
 }
 
-/* ── NATIVE RADIO CARDS (Horizontal Layout Fix) ────────────────────────── */
-/* Targets ONLY horizontal radios and uses flexbox for perfect equal-width rows */
+/* ── NATIVE RADIO CARDS (Equal Sizes Fix) ──────────────────────────────── */
+/* Uses flexbox with stretch alignment to force perfectly equal heights and widths */
 [data-testid="stRadio"] > div[role="radiogroup"][aria-orientation="horizontal"] {
     display: flex !important;
     flex-direction: row !important;
     flex-wrap: wrap !important;
+    align-items: stretch !important; /* THIS FORCES EQUAL HEIGHTS */
     gap: 12px !important;
 }
 
 [data-testid="stRadio"] > div[role="radiogroup"] > label {
-    flex: 1 1 0px !important; /* Forces equal width distribution */
-    min-width: 120px !important; /* Prevents squishing on mobile */
+    flex: 1 1 0% !important; /* THIS FORCES EQUAL WIDTHS */
+    min-width: 140px !important; /* Prevents squishing on small screens */
     background-color: var(--sv-surface) !important;
     border: 1px solid var(--sv-border) !important;
     border-radius: var(--sv-radius) !important;
@@ -1186,7 +1187,7 @@ audio {
     margin: 0 !important;
     transition: all 0.2s ease !important;
     cursor: pointer !important;
-    align-items: flex-start !important;
+    align-items: flex-start !important; /* Keeps the radio circle at the top */
 }
 
 [data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
@@ -1213,19 +1214,23 @@ audio {
 }
             
 /* ── FIX SLIDER TEXT CONTRAST (Tuning Matrix) ──────────────────────────── */
-/* 1. Mutes the inactive slider labels so the active one pops */
-[data-testid="stSlider"] [data-testid="stTickBar"] > div,
-[data-testid="stSlider"] [data-testid="stTickBar"] > div * {
+/* 1. Mutes the inactive slider labels so they don't clash */
+[data-testid="stSlider"] [data-testid="stTickBar"] div {
     color: var(--sv-text-2) !important;
 }
 
-/* 2. Targets the active (selected) slider label and ALL its children to force white text */
-[data-testid="stSlider"] [data-testid="stTickBar"] > div[style*="font-weight"],
-[data-testid="stSlider"] [data-testid="stTickBar"] > div[style*="font-weight"] * {
-    color: #ffffff !important;
+/* 2. Forces the blue background on the active label container */
+[data-testid="stSlider"] [data-testid="stTickBar"] div[style*="font-weight"] {
     background-color: var(--sv-blue) !important;
-    padding: 1px 4px !important;
+    padding: 2px 8px !important;
     border-radius: 4px !important;
+}
+
+/* 3. Explicitly targets ALL nested elements inside the active label to force white text */
+[data-testid="stSlider"] [data-testid="stTickBar"] div[style*="font-weight"],
+[data-testid="stSlider"] [data-testid="stTickBar"] div[style*="font-weight"] div,
+[data-testid="stSlider"] [data-testid="stTickBar"] div[style*="font-weight"] span {
+    color: #ffffff !important;
 }
 
 /* ── PROGRESS BAR TEXT FIX (Issue 5) ───────────────────────────────────── */

@@ -1157,6 +1157,29 @@ audio {
 .sv-preflight-fail { color: var(--sv-red)   !important; font-weight: 700; }
 .sv-preflight-label { color: var(--sv-text) !important; flex: 1; }
 .sv-preflight-detail { color: var(--sv-text-2) !important; font-size: 0.74rem; }           
+
+/* \u2500\u2500 CARD SELECTION BUTTONS \u2014 selected state via data attribute \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* All card buttons default to secondary (white/outlined) */
+/* Selected card: injected .sv-sel wrapper overrides the button inside */
+.sv-sel > div[data-testid="stButton"] > button,
+.sv-sel > div[data-testid="stButton"] > button:hover {
+    background-color: var(--sv-blue-dim) !important;
+    border: 2px solid var(--sv-blue) !important;
+    color: var(--sv-blue) !important;
+    font-weight: 700 !important;
+}
+/* Unselected card buttons \u2014 clean white/outlined */
+.sv-unsel > div[data-testid="stButton"] > button {
+    background-color: var(--sv-surface) !important;
+    border: 1px solid var(--sv-border) !important;
+    color: var(--sv-text) !important;
+    font-weight: 500 !important;
+}
+.sv-unsel > div[data-testid="stButton"] > button:hover {
+    border-color: var(--sv-blue) !important;
+    background-color: var(--sv-blue-dim) !important;
+    color: var(--sv-blue) !important;
+}
 /* \u2500\u2500 PROGRESS BAR \u2014 suppress built-in label text (fixes black-on-blue) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 [data-testid="stProgress"] p {
     display: none !important;
@@ -3801,14 +3824,16 @@ with tab1:
     for _col, _opt, _icon, _hint in zip(_mode_cols, mode_options, mode_icons, mode_hints):
         with _col:
             _is_sel = st.session_state["ui_mode"] == _opt
+            _cls = "sv-sel" if _is_sel else "sv-unsel"
+            st.markdown(f'<div class="{_cls}">', unsafe_allow_html=True)
             if st.button(
                 f"{_icon}\n**{_opt}**\n{_hint}",
                 key=f"mode_btn_{_opt}",
                 use_container_width=True,
-                type="primary" if _is_sel else "secondary",
             ):
                 st.session_state["ui_mode"] = _opt
                 st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
 
     active_mode = st.session_state["ui_mode"]
  
@@ -3833,14 +3858,16 @@ with tab1:
     for _col, _opt, _badge in zip(_len_cols, length_options, length_badges):
         with _col:
             _is_sel = st.session_state["ui_length"] == _opt
+            _cls = "sv-sel" if _is_sel else "sv-unsel"
+            st.markdown(f'<div class="{_cls}">', unsafe_allow_html=True)
             if st.button(
                 f"**{_opt}**\n{_badge}",
                 key=f"len_btn_{_opt}",
                 use_container_width=True,
-                type="primary" if _is_sel else "secondary",
             ):
                 st.session_state["ui_length"] = _opt
                 st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
 
     video_length = st.session_state["ui_length"]
  
@@ -4175,14 +4202,16 @@ with tab3:
                 _is_sel = st.session_state["voice_id"] == _v_id
                 _emoji  = "👨" if _v_gender == "M" else "👩"
                 _label  = f"{_emoji} **{_v_name}** — {_v_style}  `{_v_gender}`"
+                _cls = "sv-sel" if _is_sel else "sv-unsel"
+                st.markdown(f'<div class="{_cls}">', unsafe_allow_html=True)
                 if st.button(
                     _label,
                     key=f"voice_btn_{_v_id}",
                     use_container_width=True,
-                    type="primary" if _is_sel else "secondary",
                 ):
                     st.session_state["voice_id"] = _v_id
                     st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
 
     voice_option = next(
         ((_v[0], f"{_v[1]} ({_v[3]})") for _v in VOICES

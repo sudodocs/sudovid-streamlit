@@ -112,7 +112,7 @@ PEXELS_CACHE_DIR = os.path.join(TMP_ROOT, "sudovid_pexels_cache")
 for _d in (UPLOAD_DIR, KEYFRAME_DIR, PEXELS_CACHE_DIR):
     os.makedirs(_d, exist_ok=True)
 
-# Model name — Gemini 3.5 Flash (stable, current flagship as of June 2026)
+# Model name — Gemini 3.5 Flash (stable, current flagship)
 GEMINI_MODEL = "gemini-3.5-flash"
 
 _DARK_BG  = (10, 12, 20)
@@ -1889,7 +1889,7 @@ with st.sidebar:
     st.caption(f"Model: `{GEMINI_MODEL}`")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TABS  (6 tabs — Research & Script merged; YouTube Bundle moved last as optional)
+# TABS  (6 tabs — Research & Script merged; Content Bundle last, optional)
 # ─────────────────────────────────────────────────────────────────────────────
 (tab1, tab2, tab3, tab4, tab5, tab6) = st.tabs([
     "1. Parameters",
@@ -1897,7 +1897,7 @@ with st.sidebar:
     "3. Research & Script",
     "4. Voiceover",
     "5. Video Assembly",
-    "6. YouTube Bundle ✦ Optional",
+    "6. Content Bundle",
 ])
 
 
@@ -2471,7 +2471,7 @@ with tab5:
                                 mime="video/mp4",
                             )
                     st.info(
-                        "💡 Head to **Tab 6 — YouTube Bundle** whenever you're "
+                        "💡 Head to **Tab 6 — Content Bundle** whenever you're "
                         "ready to generate your title, description, tags, and "
                         "thumbnail prompt. It's optional and can be done any time."
                     )
@@ -2490,14 +2490,19 @@ with tab5:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 6 — YOUTUBE BUNDLE  (optional post-production step)
+# TAB 6 — CONTENT BUNDLE  (optional post-production step)
+#
+# Currently generates metadata for YouTube.
+# Future: extend platform_target to support Vimeo, Dailymotion, Rumble, and
+# other video streaming platforms — each may need platform-specific field
+# names, description length limits, and tag formats.
 # ─────────────────────────────────────────────────────────────────────────────
 with tab6:
-    st.subheader("Step 6: YouTube Bundle")
+    st.subheader("Step 6: Content Bundle")
     st.info(
-        "**This step is optional and can be completed at any time** — before or "
-        "after video assembly. Generate your YouTube title, description, tags, "
-        "hashtags, and an AI thumbnail prompt ready to paste into YouTube Studio."
+        "**Optional — complete this at any time**, before or after video assembly. "
+        "Generate your video title, description, tags, hashtags, and an AI "
+        "thumbnail prompt ready to paste into your platform of choice."
     )
 
     # Source selector — references updated tab numbers
@@ -2508,7 +2513,7 @@ with tab6:
             "Final voiceover text (Tab 4)",
         ],
     )
-    if st.button("📦 Generate YouTube Bundle"):
+    if st.button("📦 Generate Content Bundle"):
         target_text = (
             st.session_state.get("final_script_text", "")
             if bundle_source == "Generated script (Tab 3)"
@@ -2522,7 +2527,7 @@ with tab6:
                 "Complete Step 3 (Research & Script) first."
             )
         else:
-            with st.spinner("Generating YouTube metadata…"):
+            with st.spinner("Generating content metadata…"):
                 st.session_state["yt_bundle"] = generate_youtube_bundle(
                     api_key, target_text)
 
@@ -2531,7 +2536,7 @@ with tab6:
         if "error" in bundle:
             st.error(bundle["error"])
         else:
-            st.success("✅ YouTube Bundle Generated!")
+            st.success("✅ Content Bundle Generated!")
             st.markdown("### 📝 Metadata")
             st.text_input("Viral Title",  value=bundle.get("viral_title",  ""))
             st.text_area( "Description",  value=bundle.get("description",  ""), height=200)
@@ -2542,7 +2547,7 @@ with tab6:
                 st.text_area("Hashtags", value=" ".join(bundle.get("hashtags", [])), height=100)
             st.markdown("---")
             st.markdown("### 🎨 AI Thumbnail Prompt")
-            st.caption("Paste into Midjourney, DALL-E, or Canva.")
+            st.caption("Paste into Midjourney, DALL-E, Canva, or any image generator.")
             st.text_area(
                 "Image Prompt:",
                 value=bundle.get("thumbnail_prompt", ""),
@@ -2554,6 +2559,6 @@ with tab6:
 # ─────────────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
-    f"SudoVid v3.1 | AI-Powered Script, Voice & Video Engine | "
-    f"Model: {GEMINI_MODEL} | 6-tab flow — YouTube Bundle optional"
+    f"SudoVid v2.0 | AI-Powered Script, Voice & Video Engine | "
+    f"Model: {GEMINI_MODEL} | Content Bundle currently only supports YouTube"
 )

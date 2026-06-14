@@ -1167,14 +1167,18 @@ audio {
     color: inherit !important;
 }
 
-/* ── NATIVE RADIO CARDS (Replaces broken button grids) ─────────────────── */
-/* Transforms native st.radio into a responsive grid of clickable cards */
-[data-testid="stRadio"] > div[role="radiogroup"] {
-    display: grid !important;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)) !important;
+/* ── NATIVE RADIO CARDS (Horizontal Layout Fix) ────────────────────────── */
+/* Targets ONLY horizontal radios and uses flexbox for perfect equal-width rows */
+[data-testid="stRadio"] > div[role="radiogroup"][aria-orientation="horizontal"] {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
     gap: 12px !important;
 }
+
 [data-testid="stRadio"] > div[role="radiogroup"] > label {
+    flex: 1 1 0px !important; /* Forces equal width distribution */
+    min-width: 120px !important; /* Prevents squishing on mobile */
     background-color: var(--sv-surface) !important;
     border: 1px solid var(--sv-border) !important;
     border-radius: var(--sv-radius) !important;
@@ -1184,24 +1188,42 @@ audio {
     cursor: pointer !important;
     align-items: flex-start !important;
 }
+
 [data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
     border-color: var(--sv-blue) !important;
     background-color: var(--sv-blue-dim) !important;
 }
+
 /* Selected state styling */
 [data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
     border: 2px solid var(--sv-blue) !important;
     background-color: var(--sv-blue-dim) !important;
 }
+
 /* Ensure text contrast is correct inside the card */
 [data-testid="stRadio"] > div[role="radiogroup"] > label * {
     color: var(--sv-text) !important;
 }
+
 /* Style the caption text */
 [data-testid="stRadio"] > div[role="radiogroup"] > label > div > div:last-child p {
     font-size: 0.78rem !important;
     color: var(--sv-text-2) !important;
     margin-top: 2px !important;
+}
+            
+/* ── FIX SLIDER TEXT CONTRAST (Tuning Matrix) ──────────────────────────── */
+/* Ensures inactive slider labels inherit the correct theme color */
+[data-testid="stSlider"] div[data-testid="stTickBar"] div {
+    color: var(--sv-text) !important;
+}
+
+/* Targets the active (selected) slider label and forces white text */
+[data-testid="stSlider"] div[data-testid="stTickBar"] div[style*="font-weight"] {
+    color: #ffffff !important;
+    background-color: var(--sv-blue) !important;
+    padding: 2px 6px !important;
+    border-radius: 4px !important;
 }
 
 /* ── PROGRESS BAR TEXT FIX (Issue 5) ───────────────────────────────────── */

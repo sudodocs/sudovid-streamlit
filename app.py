@@ -3003,11 +3003,11 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
             out_frame = 999999
 
         prod = ET.SubElement(mlt, "producer", {"id": pid, "in": "0", "out": str(out_frame)})
-        ET.SubElement(prod, "property", {"name": "resource"}).text    = f"./{arc}"
+        ET.SubElement(prod, "property", {"name": "resource"}).text = _xml_safe(f"./{arc}")
         ET.SubElement(prod, "property", {"name": "mlt_service"}).text = (
             "avformat" if kind == "video" else "qimage"
         )
-        ET.SubElement(prod, "property", {"name": "kdenlive:clipname"}).text = (
+        ET.SubElement(prod, "property", {"name": "kdenlive:clipname"}).text = _xml_safe(
             os.path.basename(mi["src_path"])
         )
         ET.SubElement(prod, "property", {"name": "kdenlive:clip_type"}).text = (
@@ -3027,7 +3027,7 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
             adur = 120.0
         a_out = max(0, _frames(adur, fps) - 1)
         aprod = ET.SubElement(mlt, "producer", {"id": audio_pid, "in": "0", "out": str(a_out)})
-        ET.SubElement(aprod, "property", {"name": "resource"}).text     = f"./{audio_arc}"
+        ET.SubElement(aprod, "property", {"name": "resource"}).text     = _xml_safe(f"./{audio_arc}")
         ET.SubElement(aprod, "property", {"name": "mlt_service"}).text  = "avformat"
         ET.SubElement(aprod, "property", {"name": "kdenlive:clipname"}).text = "Voiceover"
         ET.SubElement(aprod, "property", {"name": "kdenlive:clip_type"}).text = "4"
@@ -3102,6 +3102,12 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
     # Encode to bytes for the ZIP
     pretty  = pretty.encode("utf-8")
 
+    missing = [mi["arc_name"] for mi in media_items if not os.path.exists(mi["src_path"])]
+    if len(missing) == len(media_items):
+        # Every media file is gone — almost certainly a /tmp eviction.
+        # Return None so the caller shows the error banner instead of a broken ZIP.
+        return None
+
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{safe_topic}.kdenlive", pretty)
@@ -3109,6 +3115,11 @@ def generate_kdenlive_project(manifest_path: str, topic: str) -> bytes | None:
             sp = mi["src_path"]
             if sp and os.path.exists(sp):
                 zf.write(sp, mi["arc_name"])
+    # Attach a manifest of missing files so the user can re-link in KDEnlive.
+    if missing:
+        note = "Missing media (re-link in KDEnlive):\n" + "\n".join(missing)
+        with zipfile.ZipFile(buf, "a") as zf:
+            zf.writestr("MISSING_MEDIA.txt", note)
 
     buf.seek(0)
     return buf.read()

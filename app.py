@@ -3566,7 +3566,7 @@ with tab1:
     st.caption("Selects the research persona and visual strategy.")
     
     mode_map = {
-        "🎬 **Film & Series**": MODE_FILM,
+        "🎬 **Films**": MODE_FILM,
         "🔍 **Tech News**": MODE_TECH,
         "📚 **Educational**": MODE_EDU
     }

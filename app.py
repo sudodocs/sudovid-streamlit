@@ -3575,7 +3575,7 @@ with tab1:
     selected_mode_lbl = st.radio(
         "Content Mode",
         options=list(mode_map.keys()),
-        captions=["Reviews, analysis", "Incidents, deep dives", "Tutorials, explainers"],
+        captions=["Reviews, analysis", "Incidents", "Tutorials"],
         horizontal=True,
         label_visibility="collapsed"
     )
